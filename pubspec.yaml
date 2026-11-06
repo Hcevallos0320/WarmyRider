@@ -38,6 +38,7 @@ dependencies:
   latlong2: ^0.10.1
   geolocator: ^14.1.2
   supabase_flutter: ^2.18.3
+  google_sign_in: 6.2.2
 
 dev_dependencies:
   flutter_test:

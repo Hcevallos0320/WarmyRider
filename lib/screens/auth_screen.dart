@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../core/constants/supabase_constants.dart';
 import '../theme/app_colors.dart';
-import '../widgets/google_auth_sheet.dart';
 import 'driver_home_screen.dart';
 import 'driver_kyc_screen.dart';
 import 'login_screen.dart'; // Contiene el enum UserRole
@@ -15,16 +17,12 @@ enum AuthMode {
 
 /// Pantalla Unificada de Autenticación (AuthScreen) en "Premium Light Mode".
 ///
-/// Características Visuales y de UX:
-/// - Fondo limpio (#F8F9FA) con tarjeta blanca flotante y sombras suaves.
-/// - Identidad Riobamba reactiva:
-///   * Pasajero: Rojo Carmesí Vibrante (#FF2E4C)
-///   * Conductor: Azul Eléctrico Real (#2962FF)
-/// - TextFields modernos con fondo gris tenue (#F1F5F9), sin bordes por defecto,
-///   y borde de 2px en el color de acento al recibir foco.
-/// - Nuevo campo de Correo Electrónico (para notificaciones y marketing).
-/// - Animación fluida con `AnimatedSize` para el campo Cédula al cambiar de rol.
-/// - Botón principal con resplandor moderno (Glow con BoxShadow 30% y blur 12).
+/// Integra:
+/// 1. Autenticación nativa con Google Sign-In.
+/// 2. Sincronización con Supabase (OAuthProvider.google con idToken & accessToken).
+/// 3. Verificación de perfil en PostgreSQL (tabla `perfiles`).
+/// 4. Flujo de completado de datos faltantes vía Modal BottomSheet para usuarios nuevos.
+/// 5. Diseño Premium Light Mode con Identidad Riobamba (Rojo Carmesí y Azul Eléctrico).
 class AuthScreen extends StatefulWidget {
   final UserRole initialRole;
   final AuthMode initialMode;
@@ -40,13 +38,16 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  // Clave global para la validación del formulario
+  // Clave global para la validación del formulario estándar
   final _formKey = GlobalKey<FormState>();
 
   late UserRole _selectedRole;
   late AuthMode _authMode;
 
-  // Controladores de campos de texto
+  // Estado de carga para Google Sign-In
+  bool _isGoogleLoading = false;
+
+  // Controladores de campos de texto del formulario principal
   final _phoneController = TextEditingController(text: '991234567');
   final _pinController = TextEditingController(text: '1234');
   final _nameController = TextEditingController();
@@ -79,8 +80,9 @@ class _AuthScreenState extends State<AuthScreen> {
         : AppColors.riobambaBlue;
   }
 
-  /// Muestra mensaje de confirmación o alerta en SnackBar
+  /// Muestra mensaje flotante en SnackBar (Verde/Azul para éxito, Rojo para error)
   void _showNotification(String message, {bool isError = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         backgroundColor: Colors.white,
@@ -95,7 +97,7 @@ class _AuthScreenState extends State<AuthScreen> {
         content: Row(
           children: [
             Icon(
-              isError ? Icons.warning_amber_rounded : Icons.check_circle_rounded,
+              isError ? Icons.error_outline_rounded : Icons.check_circle_rounded,
               color: isError ? AppColors.statusOffline : _activeAccentColor,
             ),
             const SizedBox(width: 10),
@@ -154,24 +156,482 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  /// Flujo con Google OAuth
-  void _handleGoogleSignIn() async {
-    final selectedEmail = await GoogleAuthSheet.show(
-      context: context,
-      role: _selectedRole,
-    );
+  /// Inicio de Sesión Nativo con Google y Sincronización en Supabase PostgreSQL
+  Future<void> _signInWithGoogle() async {
+    setState(() => _isGoogleLoading = true);
 
-    if (selectedEmail != null && mounted) {
-      if (_selectedRole == UserRole.passenger) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (context) => const PassengerHomeScreen()),
-        );
+    try {
+      // 1. Iniciar el flujo interactivo de GoogleSignIn
+      final GoogleSignIn googleSignIn = GoogleSignIn(
+        scopes: ['email', 'profile'],
+      );
+
+      final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
+
+      if (googleUser == null) {
+        // El usuario canceló la selección de cuenta
+        if (mounted) setState(() => _isGoogleLoading = false);
+        return;
+      }
+
+      // Obtener los tokens de autenticación
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final String? idToken = googleAuth.idToken;
+      final String? accessToken = googleAuth.accessToken;
+
+      if (idToken == null) {
+        throw Exception('No se pudo obtener el ID Token de Google.');
+      }
+
+      // 2. Autenticación en Supabase mediante el IdToken de Google
+      final AuthResponse authResponse = await supabase.auth.signInWithIdToken(
+        provider: OAuthProvider.google,
+        idToken: idToken,
+        accessToken: accessToken,
+      );
+
+      final User? user = authResponse.user ?? supabase.auth.currentUser;
+      if (user == null) {
+        throw Exception('No se pudo verificar la sesión de usuario en Supabase.');
+      }
+
+      // 3. Validación de Perfil en la tabla 'perfiles'
+      final profile = await supabase
+          .from('perfiles')
+          .select()
+          .eq('id', user.id)
+          .maybeSingle();
+
+      if (!mounted) return;
+
+      if (profile != null) {
+        // 4. Flujo A (Usuario Existente): Navegar según el rol almacenado en la base de datos
+        final String userRole = (profile['rol'] as String?) ?? 'pasajero';
+        _showNotification('¡Bienvenido de vuelta, ${profile['nombre_completo']}!');
+
+        if (userRole == 'conductor') {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => const DriverHomeScreen()),
+          );
+        } else {
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (context) => const PassengerHomeScreen()),
+          );
+        }
       } else {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (context) => const DriverHomeScreen()),
+        // 5. Flujo B (Usuario Nuevo): Desplegar modal para completar datos faltantes
+        final userMetadata = user.userMetadata;
+        final String googleName = userMetadata?['full_name'] as String? ??
+            userMetadata?['name'] as String? ??
+            googleUser.displayName ??
+            'Usuario';
+        final String googleEmail = user.email ?? googleUser.email;
+
+        _showCompleteProfileModal(
+          userId: user.id,
+          googleName: googleName,
+          googleEmail: googleEmail,
+          isPassenger: _selectedRole == UserRole.passenger,
         );
       }
+    } catch (error) {
+      debugPrint('Error en Google Sign-In: $error');
+      _showNotification(
+        'Error al iniciar sesión con Google: ${error.toString().replaceAll("Exception: ", "")}',
+        isError: true,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isGoogleLoading = false);
+      }
     }
+  }
+
+  /// Despliega el Modal BottomSheet para solicitar celular (y cédula si es conductor)
+  void _showCompleteProfileModal({
+    required String userId,
+    required String googleName,
+    required String googleEmail,
+    required bool isPassenger,
+  }) {
+    final modalFormKey = GlobalKey<FormState>();
+    final modalPhoneController = TextEditingController();
+    final modalCedulaController = TextEditingController();
+    bool isSubmitting = false;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (modalContext) {
+        return StatefulBuilder(
+          builder: (builderContext, setModalState) {
+            final accentColor = isPassenger ? AppColors.riobambaRed : AppColors.riobambaBlue;
+
+            return Container(
+              padding: EdgeInsets.only(
+                top: 20,
+                left: 24,
+                right: 24,
+                bottom: MediaQuery.of(builderContext).viewInsets.bottom + 24,
+              ),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black12,
+                    blurRadius: 20,
+                    offset: Offset(0, -4),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                child: Form(
+                  key: modalFormKey,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Tirador superior decorativo
+                        Center(
+                          child: Container(
+                            width: 44,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFCBD5E1),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Encabezado
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: accentColor.withValues(alpha: 0.12),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                isPassenger ? Icons.person_rounded : Icons.sports_motorsports_rounded,
+                                color: accentColor,
+                                size: 26,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '¡Casi listo, $googleName!',
+                                    style: const TextStyle(
+                                      fontSize: 19,
+                                      fontWeight: FontWeight.w900,
+                                      color: Color(0xFF1E293B),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Registro como ${isPassenger ? 'Pasajero' : 'Conductor'}',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700,
+                                      color: accentColor,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        // Badge informativo con correo de Google
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F5F9),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 18),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  googleEmail,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF475569),
+                                  ),
+                                ),
+                              ),
+                              const Text(
+                                'Google',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  color: Color(0xFF94A3B8),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 18),
+
+                        // Campo Celular
+                        const Text(
+                          'NÚMERO CELULAR (REQUERIDO)',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF64748B),
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        TextFormField(
+                          controller: modalPhoneController,
+                          keyboardType: TextInputType.phone,
+                          cursorColor: accentColor,
+                          inputFormatters: [
+                            FilteringTextInputFormatter.digitsOnly,
+                            LengthLimitingTextInputFormatter(9),
+                          ],
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFF1E293B),
+                          ),
+                          validator: (val) {
+                            if (val == null || val.trim().isEmpty) {
+                              return 'Ingresa tu número celular';
+                            }
+                            if (val.trim().length < 8) {
+                              return 'Número celular inválido (mínimo 8 dígitos)';
+                            }
+                            return null;
+                          },
+                          decoration: InputDecoration(
+                            filled: true,
+                            fillColor: const Color(0xFFF1F5F9),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+                            prefixIcon: Padding(
+                              padding: const EdgeInsets.only(left: 14, right: 10),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text('🇪🇨', style: TextStyle(fontSize: 18)),
+                                  const SizedBox(width: 6),
+                                  const Text(
+                                    '+593',
+                                    style: TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF1E293B),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Container(
+                                    height: 20,
+                                    width: 1.2,
+                                    color: const Color(0xFFCBD5E1),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            hintText: '99 123 4567',
+                            hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide.none,
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              borderSide: BorderSide(color: accentColor, width: 2),
+                            ),
+                          ),
+                        ),
+
+                        // Campo Cédula si es Conductor
+                        if (!isPassenger) ...[
+                          const SizedBox(height: 14),
+                          const Text(
+                            'CÉDULA DE IDENTIDAD (OBLIGATORIO)',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              color: Color(0xFF64748B),
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          TextFormField(
+                            controller: modalCedulaController,
+                            keyboardType: TextInputType.number,
+                            cursorColor: accentColor,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(10),
+                            ],
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF1E293B),
+                            ),
+                            validator: (val) {
+                              if (val == null || val.trim().isEmpty) {
+                                return 'La cédula es obligatoria para conductores';
+                              }
+                              if (val.trim().length != 10) {
+                                return 'La cédula ecuatoriana debe tener 10 dígitos';
+                              }
+                              return null;
+                            },
+                            decoration: InputDecoration(
+                              filled: true,
+                              fillColor: const Color(0xFFF1F5F9),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+                              prefixIcon: Icon(Icons.badge_outlined, color: accentColor, size: 20),
+                              hintText: '10 dígitos (Ecuador)',
+                              hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 14),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(16),
+                                borderSide: BorderSide.none,
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(16),
+                                borderSide: BorderSide(color: accentColor, width: 2),
+                              ),
+                            ),
+                          ),
+                        ],
+
+                        const SizedBox(height: 24),
+
+                        // Botón Finalizar Registro con Glow
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 250),
+                          height: 54,
+                          decoration: BoxDecoration(
+                            color: accentColor,
+                            borderRadius: BorderRadius.circular(16),
+                            boxShadow: [
+                              BoxShadow(
+                                color: accentColor.withValues(alpha: 0.30),
+                                blurRadius: 12,
+                                offset: const Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(16),
+                              onTap: isSubmitting
+                                  ? null
+                                  : () async {
+                                      if (!modalFormKey.currentState!.validate()) {
+                                        return;
+                                      }
+
+                                      setModalState(() => isSubmitting = true);
+
+                                      try {
+                                        final phone = '+593${modalPhoneController.text.trim()}';
+                                        final cedula = isPassenger
+                                            ? null
+                                            : modalCedulaController.text.trim();
+
+                                        // Inserción en la tabla perfiles de PostgreSQL
+                                        await supabase.from('perfiles').insert({
+                                          'id': userId,
+                                          'rol': isPassenger ? 'pasajero' : 'conductor',
+                                          'nombre_completo': googleName,
+                                          'correo': googleEmail,
+                                          'celular': phone,
+                                          'cedula': cedula,
+                                          'calificacion': 5.0,
+                                        });
+
+                                        if (!modalContext.mounted) return;
+                                        Navigator.of(modalContext).pop();
+
+                                        if (!mounted) return;
+                                        _showNotification(
+                                          '¡Registro completado! Bienvenido a Riobamba Moto, $googleName.',
+                                        );
+
+                                        if (isPassenger) {
+                                          Navigator.of(context).pushReplacement(
+                                            MaterialPageRoute(
+                                              builder: (context) => const PassengerHomeScreen(),
+                                            ),
+                                          );
+                                        } else {
+                                          Navigator.of(context).pushReplacement(
+                                            MaterialPageRoute(
+                                              builder: (context) => const DriverHomeScreen(),
+                                            ),
+                                          );
+                                        }
+                                      } catch (insertError) {
+                                        debugPrint('Error guardando perfil: $insertError');
+                                        setModalState(() => isSubmitting = false);
+                                        _showNotification(
+                                          'Error al guardar datos: $insertError',
+                                          isError: true,
+                                        );
+                                      }
+                                    },
+                              child: Center(
+                                child: isSubmitting
+                                    ? const SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Text(
+                                            'Finalizar Registro',
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w900,
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                          SizedBox(width: 8),
+                                          Icon(Icons.check_rounded, color: Colors.white, size: 20),
+                                        ],
+                                      ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -340,7 +800,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
                           const SizedBox(height: 16),
 
-                          // 5. Botón Secundario con Google
+                          // 5. Botón Nativo de Google Sign-In con indicador de carga
                           _buildGoogleButton(),
                         ],
                       ),
@@ -624,9 +1084,6 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   /// Formulario de Registro con Estética Premium y Lógica Condicional:
-  /// - TextFields con fondo #F1F5F9, bordes en foco a 2px y prefixIcons elegantes.
-  /// - Animación con AnimatedSize para la Cédula (y texto "Requerido por seguridad").
-  /// - Nuevo campo de Correo Electrónico para ambos roles.
   Widget _buildRegisterForm(Color accentColor, bool isPassenger) {
     return Column(
       key: ValueKey('register_form_${isPassenger ? 'passenger' : 'driver'}'),
@@ -684,7 +1141,7 @@ class _AuthScreenState extends State<AuthScreen> {
         _buildPhoneField(accentColor),
         const SizedBox(height: 12),
 
-        // 3. NUEVO: Campo Correo Electrónico (para notificaciones y marketing)
+        // 3. Campo Correo Electrónico
         _buildTextField(
           controller: _emailController,
           label: 'Correo Electrónico',
@@ -941,7 +1398,6 @@ class _AuthScreenState extends State<AuthScreen> {
         color: accentColor,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          // Efecto Glow con opacidad al 30% y blurRadius de 12
           BoxShadow(
             color: accentColor.withValues(alpha: 0.30),
             blurRadius: 12,
@@ -976,32 +1432,41 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
-  /// Botón secundario con Google
+  /// Botón nativo de Google con indicador de carga
   Widget _buildGoogleButton() {
     return SizedBox(
       height: 52,
       child: OutlinedButton(
-        onPressed: _handleGoogleSignIn,
+        onPressed: _isGoogleLoading ? null : _signInWithGoogle,
         style: OutlinedButton.styleFrom(
           backgroundColor: Colors.white,
           side: const BorderSide(color: Color(0xFFE2E8F0)),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         ),
-        child: const Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.g_mobiledata_rounded, color: Color(0xFF1E293B), size: 30),
-            SizedBox(width: 8),
-            Text(
-              'Continuar con Google',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF1E293B),
+        child: _isGoogleLoading
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.2,
+                  color: AppColors.riobambaBlue,
+                ),
+              )
+            : const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.g_mobiledata_rounded, color: Color(0xFF1E293B), size: 30),
+                  SizedBox(width: 8),
+                  Text(
+                    'Continuar con Google',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1E293B),
+                    ),
+                  ),
+                ],
               ),
-            ),
-          ],
-        ),
       ),
     );
   }
