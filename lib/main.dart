@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'core/supabase_constants.dart';
 import 'screens/auth_screen.dart';
 import 'screens/driver_home_screen.dart';
 import 'screens/driver_kyc_screen.dart';
@@ -7,12 +9,24 @@ import 'screens/passenger_home_screen.dart';
 import 'theme/app_theme.dart';
 import 'utils/constants.dart';
 
-void main() {
+Future<void> main() async {
   // Asegura la inicialización de los bindings del framework
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Inicialización de Supabase (PostgreSQL, Auth, Realtime)
+  // Usamos las constantes definidas en lib/core/supabase_constants.dart
+  try {
+    await Supabase.initialize(
+      url: SupabaseConstants.supabaseUrl,
+      // ignore: deprecated_member_use
+      anonKey: SupabaseConstants.supabaseAnonKey,
+    );
+  } catch (error) {
+    debugPrint('Aviso Supabase: Pendiente configurar credenciales reales ($error)');
+  }
+
   // Bloquea la orientación a vertical para uso seguro en soporte de motocicleta
-  SystemChrome.setPreferredOrientations([
+  await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
