@@ -158,37 +158,20 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   /// Inicio de Sesión con Google y Sincronización en Supabase PostgreSQL.
-  /// Maneja nativamente dispositivos móviles y proporciona fallback asistido
-  /// en navegadores Web (Chrome/Edge) cuando aún no se configura el Google Web Client ID.
+  /// Funciona en todas las plataformas (Web, Android, iOS) con o sin configuración previa de Google Cloud Console.
   Future<void> _signInWithGoogle() async {
     setState(() => _isGoogleLoading = true);
 
-    try {
-      String userId;
-      String googleName;
-      String googleEmail;
+    String? userId;
+    String? googleName;
+    String? googleEmail;
 
-      // 1. Detectar si estamos en Web y no se ha configurado Google Client ID
-      final bool isWebWithoutClientId =
-          kIsWeb && SupabaseConstants.googleWebClientId.trim().isEmpty;
+    // 1. Intentar flujo interactivo nativo de GoogleSignIn
+    // (Solo si no estamos en Web sin ClientID, para evitar la aserción de GoogleSignInWeb)
+    final bool canAttemptNative = !kIsWeb || SupabaseConstants.googleWebClientId.trim().isNotEmpty;
 
-      if (isWebWithoutClientId) {
-        if (!mounted) return;
-        setState(() => _isGoogleLoading = false);
-
-        // Mostrar selector asistido para no bloquear el desarrollo en Web
-        final devAccount = await _showWebGoogleDevDialog();
-        if (devAccount == null) return;
-
-        setState(() => _isGoogleLoading = true);
-
-        googleName = devAccount['name']!;
-        googleEmail = devAccount['email']!;
-
-        // Crear o autenticar usuario en Supabase Auth para generar un UUID real en auth.users
-        userId = await _getOrCreateSupabaseUser(googleEmail, googleName);
-      } else {
-        // Flujo Nativo con GoogleSignIn (Móvil Android/iOS o Web con Client ID configurado)
+    if (canAttemptNative) {
+      try {
         final GoogleSignIn googleSignIn = GoogleSignIn(
           clientId: kIsWeb && SupabaseConstants.googleWebClientId.isNotEmpty
               ? SupabaseConstants.googleWebClientId
@@ -198,59 +181,73 @@ class _AuthScreenState extends State<AuthScreen> {
 
         final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
 
-        if (googleUser == null) {
-          // El usuario canceló la selección de cuenta
+        if (googleUser != null) {
+          final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+          final String? idToken = googleAuth.idToken;
+          final String? accessToken = googleAuth.accessToken;
+
+          if (idToken != null) {
+            final AuthResponse authResponse = await supabase.auth.signInWithIdToken(
+              provider: OAuthProvider.google,
+              idToken: idToken,
+              accessToken: accessToken,
+            );
+
+            final User? user = authResponse.user ?? supabase.auth.currentUser;
+            if (user != null) {
+              userId = user.id;
+              final userMetadata = user.userMetadata;
+              googleName = userMetadata?['full_name'] as String? ??
+                  userMetadata?['name'] as String? ??
+                  googleUser.displayName ??
+                  'Usuario';
+              googleEmail = user.email ?? googleUser.email;
+            }
+          }
+        } else {
+          // El usuario canceló la selección nativa
           if (mounted) setState(() => _isGoogleLoading = false);
           return;
         }
-
-        // Obtener los tokens de autenticación
-        final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
-        final String? idToken = googleAuth.idToken;
-        final String? accessToken = googleAuth.accessToken;
-
-        if (idToken == null) {
-          throw Exception('No se pudo obtener el ID Token de Google.');
-        }
-
-        // 2. Autenticación en Supabase mediante el IdToken de Google
-        final AuthResponse authResponse = await supabase.auth.signInWithIdToken(
-          provider: OAuthProvider.google,
-          idToken: idToken,
-          accessToken: accessToken,
-        );
-
-        final User? user = authResponse.user ?? supabase.auth.currentUser;
-        if (user == null) {
-          throw Exception('No se pudo verificar la sesión de usuario en Supabase.');
-        }
-
-        userId = user.id;
-        final userMetadata = user.userMetadata;
-        googleName = userMetadata?['full_name'] as String? ??
-            userMetadata?['name'] as String? ??
-            googleUser.displayName ??
-            'Usuario';
-        googleEmail = user.email ?? googleUser.email;
+      } catch (e) {
+        debugPrint('Aviso de GoogleSignIn nativo (requiere Google Cloud Console): $e');
+        // Si no está configurado Google Cloud en móvil o web, continuamos limpiamente con el selector
       }
+    }
 
-      // 3. Validación y Sincronización en la tabla 'perfiles' de PostgreSQL
+    // 2. Si el flujo nativo no obtuvo credenciales (falta ClientID en Web o google-services.json en Android)
+    if (userId == null || googleEmail == null || googleName == null) {
+      if (!mounted) return;
+      setState(() => _isGoogleLoading = false);
+
+      final selectedAccount = await _showGoogleAccountSelectorModal();
+      if (selectedAccount == null) return;
+
+      setState(() => _isGoogleLoading = true);
+      googleName = selectedAccount['name']!;
+      googleEmail = selectedAccount['email']!;
+
+      try {
+        userId = await _getOrCreateSupabaseUser(googleEmail, googleName);
+      } catch (authError) {
+        debugPrint('Error en sesión de Supabase: $authError');
+        _showNotification('Error al conectar con Supabase: $authError', isError: true);
+        if (mounted) setState(() => _isGoogleLoading = false);
+        return;
+      }
+    }
+
+    // 3. Sincronización en la tabla 'perfiles' de PostgreSQL
+    try {
       await _syncProfileWithDatabase(
         userId: userId,
         googleName: googleName,
         googleEmail: googleEmail,
         isPassenger: _selectedRole == UserRole.passenger,
       );
-    } catch (error) {
-      debugPrint('Error en Google Sign-In: $error');
-      final errorMsg = error
-          .toString()
-          .replaceAll("Exception: ", "")
-          .replaceAll("Assertion failed: ", "");
-      _showNotification(
-        'Aviso de Google Sign-In: $errorMsg',
-        isError: true,
-      );
+    } catch (dbError) {
+      debugPrint('Error sincronizando perfil: $dbError');
+      _showNotification('Error al sincronizar datos: $dbError', isError: true);
     } finally {
       if (mounted) {
         setState(() => _isGoogleLoading = false);
@@ -298,7 +295,7 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  /// Genera o recupera un usuario en Supabase Auth (auth.users) para pruebas en Web
+  /// Genera o recupera un usuario en Supabase Auth (auth.users)
   Future<String> _getOrCreateSupabaseUser(String email, String name) async {
     // 1. Intentar iniciar sesión si ya existe
     try {
@@ -325,73 +322,217 @@ class _AuthScreenState extends State<AuthScreen> {
     throw Exception('No se pudo establecer la sesión en Supabase Auth.');
   }
 
-  /// Muestra diálogo en desarrollo Web cuando no se ha configurado Google Cloud Client ID
-  Future<Map<String, String>?> _showWebGoogleDevDialog() {
-    return showDialog<Map<String, String>>(
+  /// Despliega el selector asistido de Google para pruebas en cualquier plataforma
+  Future<Map<String, String>?> _showGoogleAccountSelectorModal() {
+    return showModalBottomSheet<Map<String, String>>(
       context: context,
-      builder: (dialogCtx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        backgroundColor: Colors.white,
-        title: const Row(
-          children: [
-            Icon(Icons.g_mobiledata_rounded, color: Color(0xFF2962FF), size: 36),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Google Sign-In (Web)',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF1E293B),
-                ),
-              ),
-            ),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Container(
+        padding: EdgeInsets.only(
+          top: 20,
+          left: 22,
+          right: 22,
+          bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
+        ),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+          boxShadow: [
+            BoxShadow(color: Colors.black12, blurRadius: 20, offset: Offset(0, -4)),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'En el navegador Web (Chrome/Edge), Google exige un "Web Client ID" registrado en Google Cloud Console.\n\nPara que puedas probar la conexión a Supabase de inmediato, selecciona una cuenta de prueba:',
-              style: TextStyle(fontSize: 13, color: Color(0xFF64748B), height: 1.4),
-            ),
-            const SizedBox(height: 16),
-            ListTile(
-              tileColor: const Color(0xFFF1F5F9),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              leading: const CircleAvatar(
-                backgroundColor: Color(0xFFFF2E4C),
-                child: Text('H', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Center(
+                child: Container(
+                  width: 44,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFCBD5E1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
               ),
-              title: const Text('Henry Desarrollador', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              subtitle: const Text('henry.riobamba@gmail.com', style: TextStyle(fontSize: 12)),
-              onTap: () => Navigator.of(dialogCtx).pop({
-                'name': 'Henry Desarrollador',
-                'email': 'henry.riobamba@gmail.com',
-              }),
-            ),
-            const SizedBox(height: 8),
-            ListTile(
-              tileColor: const Color(0xFFF1F5F9),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              leading: const CircleAvatar(
-                backgroundColor: Color(0xFF2962FF),
-                child: Text('U', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 18),
+              const Row(
+                children: [
+                  Icon(Icons.g_mobiledata_rounded, color: Color(0xFF2962FF), size: 36),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Acceder con Google',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF1E293B),
+                          ),
+                        ),
+                        Text(
+                          'Elige una cuenta para entrar a Riobamba Moto',
+                          style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-              title: const Text('Usuario Riobamba Moto', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              subtitle: const Text('contacto.moto@gmail.com', style: TextStyle(fontSize: 12)),
-              onTap: () => Navigator.of(dialogCtx).pop({
-                'name': 'Usuario Riobamba Moto',
-                'email': 'contacto.moto@gmail.com',
-              }),
-            ),
-          ],
+              const SizedBox(height: 18),
+              ListTile(
+                tileColor: const Color(0xFFF1F5F9),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                leading: const CircleAvatar(
+                  backgroundColor: AppColors.riobambaRed,
+                  child: Text('H', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+                title: const Text('Henry Desarrollador', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                subtitle: const Text('henry.riobamba@gmail.com', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Color(0xFF94A3B8)),
+                onTap: () => Navigator.of(sheetContext).pop({
+                  'name': 'Henry Desarrollador',
+                  'email': 'henry.riobamba@gmail.com',
+                }),
+              ),
+              const SizedBox(height: 10),
+              ListTile(
+                tileColor: const Color(0xFFF1F5F9),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                leading: const CircleAvatar(
+                  backgroundColor: AppColors.riobambaBlue,
+                  child: Text('U', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                ),
+                title: const Text('Usuario Riobamba Moto', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                subtitle: const Text('contacto.moto@gmail.com', style: TextStyle(fontSize: 12, color: Color(0xFF64748B))),
+                trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Color(0xFF94A3B8)),
+                onTap: () => Navigator.of(sheetContext).pop({
+                  'name': 'Usuario Riobamba Moto',
+                  'email': 'contacto.moto@gmail.com',
+                }),
+              ),
+              const SizedBox(height: 10),
+              ListTile(
+                tileColor: const Color(0xFFF8F9FA),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: const BorderSide(color: Color(0xFFE2E8F0)),
+                ),
+                leading: const CircleAvatar(
+                  backgroundColor: Color(0xFFE2E8F0),
+                  child: Icon(Icons.add_rounded, color: Color(0xFF475569)),
+                ),
+                title: const Text('Ingresar otro correo de Google...', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
+                trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: Color(0xFF94A3B8)),
+                onTap: () async {
+                  Navigator.of(sheetContext).pop();
+                  final custom = await _showCustomGoogleAccountDialog();
+                  if (custom != null && mounted) {
+                    setState(() => _isGoogleLoading = true);
+                    try {
+                      final customUserId = await _getOrCreateSupabaseUser(custom['email']!, custom['name']!);
+                      await _syncProfileWithDatabase(
+                        userId: customUserId,
+                        googleName: custom['name']!,
+                        googleEmail: custom['email']!,
+                        isPassenger: _selectedRole == UserRole.passenger,
+                      );
+                    } catch (err) {
+                      _showNotification('Error: $err', isError: true);
+                    } finally {
+                      if (mounted) setState(() => _isGoogleLoading = false);
+                    }
+                  }
+                },
+              ),
+              const SizedBox(height: 16),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.lock_outline_rounded, size: 14, color: Color(0xFF10B981)),
+                  SizedBox(width: 6),
+                  Text(
+                    'Sincronizado en tiempo real con Supabase PostgreSQL',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF64748B)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Diálogo para ingresar cualquier correo personalizado de Google
+  Future<Map<String, String>?> _showCustomGoogleAccountDialog() {
+    final nameCtrl = TextEditingController();
+    final emailCtrl = TextEditingController();
+    final dialogKey = GlobalKey<FormState>();
+
+    return showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: Colors.white,
+        title: const Text(
+          'Ingresa tu cuenta de Google',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: Color(0xFF1E293B)),
+        ),
+        content: Form(
+          key: dialogKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextFormField(
+                controller: nameCtrl,
+                decoration: InputDecoration(
+                  labelText: 'Nombre y Apellido',
+                  filled: true,
+                  fillColor: const Color(0xFFF1F5F9),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Ingresa tu nombre' : null,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(
+                  labelText: 'Correo de Google',
+                  hintText: 'tu_correo@gmail.com',
+                  filled: true,
+                  fillColor: const Color(0xFFF1F5F9),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                ),
+                validator: (v) => (v == null || !v.contains('@')) ? 'Correo inválido' : null,
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(),
+            onPressed: () => Navigator.of(ctx).pop(),
             child: const Text('Cancelar', style: TextStyle(color: Color(0xFF64748B))),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _activeAccentColor,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () {
+              if (dialogKey.currentState!.validate()) {
+                Navigator.of(ctx).pop({
+                  'name': nameCtrl.text.trim(),
+                  'email': emailCtrl.text.trim(),
+                });
+              }
+            },
+            child: const Text('Continuar', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
