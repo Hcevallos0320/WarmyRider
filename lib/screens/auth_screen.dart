@@ -67,6 +67,32 @@ class _AuthScreenState extends State<AuthScreen> {
         : AppColors.riobambaBlue;
   }
 
+  /// Muestra mensaje de validación en SnackBar
+  void _showValidationMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: AppColors.surfaceElevated,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: BorderSide(color: _activeAccentColor),
+        ),
+        content: Row(
+          children: [
+            Icon(Icons.info_outline_rounded, color: _activeAccentColor),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// Procesa la acción del botón principal según el modo y rol
   void _handleSubmit() {
     final isPassenger = _selectedRole == UserRole.passenger;
@@ -84,6 +110,32 @@ class _AuthScreenState extends State<AuthScreen> {
       }
     } else {
       // CREAR CUENTA
+      final name = _nameController.text.trim();
+      final phone = _phoneController.text.trim();
+      final cedula = _cedulaController.text.trim();
+
+      if (name.isEmpty) {
+        _showValidationMessage('Por favor ingresa tus nombres y apellidos.');
+        return;
+      }
+
+      if (phone.isEmpty || phone.length < 8) {
+        _showValidationMessage('Por favor ingresa un número celular de contacto válido.');
+        return;
+      }
+
+      // Validación condicional de Cédula (Obligatoria SOLO para Conductores)
+      if (!isPassenger) {
+        if (cedula.isEmpty) {
+          _showValidationMessage('La cédula de identidad es obligatoria para conductores.');
+          return;
+        }
+        if (cedula.length != 10) {
+          _showValidationMessage('La cédula ecuatoriana debe tener exactamente 10 dígitos.');
+          return;
+        }
+      }
+
       if (isPassenger) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -93,7 +145,18 @@ class _AuthScreenState extends State<AuthScreen> {
               borderRadius: BorderRadius.circular(14),
               side: const BorderSide(color: AppColors.riobambaRed),
             ),
-            content: const Text('¡Cuenta de pasajero creada con éxito!'),
+            content: Row(
+              children: [
+                const Icon(Icons.check_circle_rounded, color: AppColors.riobambaRed),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '¡Bienvenido a Riobamba Moto, $name!',
+                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+                  ),
+                ),
+              ],
+            ),
           ),
         );
         Navigator.of(context).pushReplacement(
@@ -479,13 +542,15 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
-  /// Formulario de Registro: Nombres, Cédula, Celular, Correo
+  /// Formulario de Registro Dinámico según el Rol:
+  /// - Pasajero (Rojo): SOLO Nombre Completo y Celular (cero fricción).
+  /// - Conductor (Azul): Nombre Completo, Celular y Cédula de Identidad (obligatoria).
   Widget _buildRegisterForm(Color accentColor, bool isPassenger) {
     return Column(
-      key: const ValueKey('register_form'),
+      key: ValueKey('register_form_${isPassenger ? 'passenger' : 'driver'}'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Aviso para conductores
+        // Aviso para conductores sobre el proceso de validación vehicular
         if (!isPassenger)
           Container(
             margin: const EdgeInsets.only(bottom: 16),
@@ -509,37 +574,35 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
           ),
 
+        // 1. Nombre Completo (Requerido para Pasajero y Conductor)
         _buildTextField(
           controller: _nameController,
-          label: 'Nombres Completos',
+          label: 'Nombres y Apellidos',
           hint: 'Ej: Carlos Moreno',
           icon: Icons.person_outline_rounded,
           accentColor: accentColor,
         ),
         const SizedBox(height: 12),
 
-        _buildTextField(
-          controller: _cedulaController,
-          label: 'Cédula de Identidad',
-          hint: '10 dígitos (Ecuador)',
-          icon: Icons.badge_outlined,
-          keyboardType: TextInputType.number,
-          inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
-          accentColor: accentColor,
-        ),
-        const SizedBox(height: 12),
+        // 2. Cédula de Identidad (OBLIGATORIA SÓLO PARA CONDUCTOR)
+        if (!isPassenger) ...[
+          _buildTextField(
+            controller: _cedulaController,
+            label: 'Cédula de Identidad (Obligatorio)',
+            hint: '10 dígitos (Ecuador)',
+            icon: Icons.badge_outlined,
+            keyboardType: TextInputType.number,
+            inputFormatters: [
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(10),
+            ],
+            accentColor: accentColor,
+          ),
+          const SizedBox(height: 12),
+        ],
 
+        // 3. Celular Ecuatoriano (+593)
         _buildPhoneField(accentColor),
-        const SizedBox(height: 12),
-
-        _buildTextField(
-          controller: _emailController,
-          label: 'Correo Electrónico',
-          hint: 'correo@ejemplo.com',
-          icon: Icons.email_outlined,
-          keyboardType: TextInputType.emailAddress,
-          accentColor: accentColor,
-        ),
       ],
     );
   }
