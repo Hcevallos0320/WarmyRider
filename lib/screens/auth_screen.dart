@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -156,88 +157,98 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  /// Inicio de Sesión Nativo con Google y Sincronización en Supabase PostgreSQL
+  /// Inicio de Sesión con Google y Sincronización en Supabase PostgreSQL.
+  /// Maneja nativamente dispositivos móviles y proporciona fallback asistido
+  /// en navegadores Web (Chrome/Edge) cuando aún no se configura el Google Web Client ID.
   Future<void> _signInWithGoogle() async {
     setState(() => _isGoogleLoading = true);
 
     try {
-      // 1. Iniciar el flujo interactivo de GoogleSignIn
-      final GoogleSignIn googleSignIn = GoogleSignIn(
-        scopes: ['email', 'profile'],
-      );
+      String userId;
+      String googleName;
+      String googleEmail;
 
-      final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
+      // 1. Detectar si estamos en Web y no se ha configurado Google Client ID
+      final bool isWebWithoutClientId =
+          kIsWeb && SupabaseConstants.googleWebClientId.trim().isEmpty;
 
-      if (googleUser == null) {
-        // El usuario canceló la selección de cuenta
-        if (mounted) setState(() => _isGoogleLoading = false);
-        return;
-      }
+      if (isWebWithoutClientId) {
+        if (!mounted) return;
+        setState(() => _isGoogleLoading = false);
 
-      // Obtener los tokens de autenticación
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
-      final String? idToken = googleAuth.idToken;
-      final String? accessToken = googleAuth.accessToken;
+        // Mostrar selector asistido para no bloquear el desarrollo en Web
+        final devAccount = await _showWebGoogleDevDialog();
+        if (devAccount == null) return;
 
-      if (idToken == null) {
-        throw Exception('No se pudo obtener el ID Token de Google.');
-      }
+        setState(() => _isGoogleLoading = true);
 
-      // 2. Autenticación en Supabase mediante el IdToken de Google
-      final AuthResponse authResponse = await supabase.auth.signInWithIdToken(
-        provider: OAuthProvider.google,
-        idToken: idToken,
-        accessToken: accessToken,
-      );
+        googleName = devAccount['name']!;
+        googleEmail = devAccount['email']!;
 
-      final User? user = authResponse.user ?? supabase.auth.currentUser;
-      if (user == null) {
-        throw Exception('No se pudo verificar la sesión de usuario en Supabase.');
-      }
-
-      // 3. Validación de Perfil en la tabla 'perfiles'
-      final profile = await supabase
-          .from('perfiles')
-          .select()
-          .eq('id', user.id)
-          .maybeSingle();
-
-      if (!mounted) return;
-
-      if (profile != null) {
-        // 4. Flujo A (Usuario Existente): Navegar según el rol almacenado en la base de datos
-        final String userRole = (profile['rol'] as String?) ?? 'pasajero';
-        _showNotification('¡Bienvenido de vuelta, ${profile['nombre_completo']}!');
-
-        if (userRole == 'conductor') {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (context) => const DriverHomeScreen()),
-          );
-        } else {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (context) => const PassengerHomeScreen()),
-          );
-        }
+        // Crear o autenticar usuario en Supabase Auth para generar un UUID real en auth.users
+        userId = await _getOrCreateSupabaseUser(googleEmail, googleName);
       } else {
-        // 5. Flujo B (Usuario Nuevo): Desplegar modal para completar datos faltantes
+        // Flujo Nativo con GoogleSignIn (Móvil Android/iOS o Web con Client ID configurado)
+        final GoogleSignIn googleSignIn = GoogleSignIn(
+          clientId: kIsWeb && SupabaseConstants.googleWebClientId.isNotEmpty
+              ? SupabaseConstants.googleWebClientId
+              : null,
+          scopes: ['email', 'profile'],
+        );
+
+        final GoogleSignInAccount? googleUser = await googleSignIn.signIn();
+
+        if (googleUser == null) {
+          // El usuario canceló la selección de cuenta
+          if (mounted) setState(() => _isGoogleLoading = false);
+          return;
+        }
+
+        // Obtener los tokens de autenticación
+        final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+        final String? idToken = googleAuth.idToken;
+        final String? accessToken = googleAuth.accessToken;
+
+        if (idToken == null) {
+          throw Exception('No se pudo obtener el ID Token de Google.');
+        }
+
+        // 2. Autenticación en Supabase mediante el IdToken de Google
+        final AuthResponse authResponse = await supabase.auth.signInWithIdToken(
+          provider: OAuthProvider.google,
+          idToken: idToken,
+          accessToken: accessToken,
+        );
+
+        final User? user = authResponse.user ?? supabase.auth.currentUser;
+        if (user == null) {
+          throw Exception('No se pudo verificar la sesión de usuario en Supabase.');
+        }
+
+        userId = user.id;
         final userMetadata = user.userMetadata;
-        final String googleName = userMetadata?['full_name'] as String? ??
+        googleName = userMetadata?['full_name'] as String? ??
             userMetadata?['name'] as String? ??
             googleUser.displayName ??
             'Usuario';
-        final String googleEmail = user.email ?? googleUser.email;
-
-        _showCompleteProfileModal(
-          userId: user.id,
-          googleName: googleName,
-          googleEmail: googleEmail,
-          isPassenger: _selectedRole == UserRole.passenger,
-        );
+        googleEmail = user.email ?? googleUser.email;
       }
+
+      // 3. Validación y Sincronización en la tabla 'perfiles' de PostgreSQL
+      await _syncProfileWithDatabase(
+        userId: userId,
+        googleName: googleName,
+        googleEmail: googleEmail,
+        isPassenger: _selectedRole == UserRole.passenger,
+      );
     } catch (error) {
       debugPrint('Error en Google Sign-In: $error');
+      final errorMsg = error
+          .toString()
+          .replaceAll("Exception: ", "")
+          .replaceAll("Assertion failed: ", "");
       _showNotification(
-        'Error al iniciar sesión con Google: ${error.toString().replaceAll("Exception: ", "")}',
+        'Aviso de Google Sign-In: $errorMsg',
         isError: true,
       );
     } finally {
@@ -245,6 +256,146 @@ class _AuthScreenState extends State<AuthScreen> {
         setState(() => _isGoogleLoading = false);
       }
     }
+  }
+
+  /// Sincroniza y valida el perfil del usuario con PostgreSQL
+  Future<void> _syncProfileWithDatabase({
+    required String userId,
+    required String googleName,
+    required String googleEmail,
+    required bool isPassenger,
+  }) async {
+    final profile = await supabase
+        .from('perfiles')
+        .select()
+        .eq('id', userId)
+        .maybeSingle();
+
+    if (!mounted) return;
+
+    if (profile != null) {
+      // Flujo A (Usuario Existente): Navegar según el rol almacenado en la base de datos
+      final String userRole = (profile['rol'] as String?) ?? (isPassenger ? 'pasajero' : 'conductor');
+      _showNotification('¡Bienvenido de vuelta, ${profile['nombre_completo']}!');
+
+      if (userRole == 'conductor') {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (context) => const DriverHomeScreen()),
+        );
+      } else {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (context) => const PassengerHomeScreen()),
+        );
+      }
+    } else {
+      // Flujo B (Usuario Nuevo): Desplegar modal para completar datos faltantes
+      _showCompleteProfileModal(
+        userId: userId,
+        googleName: googleName,
+        googleEmail: googleEmail,
+        isPassenger: isPassenger,
+      );
+    }
+  }
+
+  /// Genera o recupera un usuario en Supabase Auth (auth.users) para pruebas en Web
+  Future<String> _getOrCreateSupabaseUser(String email, String name) async {
+    // 1. Intentar iniciar sesión si ya existe
+    try {
+      final res = await supabase.auth.signInWithPassword(
+        email: email,
+        password: 'Password123!',
+      );
+      if (res.user != null) return res.user!.id;
+    } catch (_) {}
+
+    // 2. Si no existe, crearlo en Supabase Auth
+    try {
+      final signUpRes = await supabase.auth.signUp(
+        email: email,
+        password: 'Password123!',
+        data: {'full_name': name},
+      );
+      if (signUpRes.user != null) return signUpRes.user!.id;
+    } catch (_) {}
+
+    final currentUser = supabase.auth.currentUser;
+    if (currentUser != null) return currentUser.id;
+
+    throw Exception('No se pudo establecer la sesión en Supabase Auth.');
+  }
+
+  /// Muestra diálogo en desarrollo Web cuando no se ha configurado Google Cloud Client ID
+  Future<Map<String, String>?> _showWebGoogleDevDialog() {
+    return showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        backgroundColor: Colors.white,
+        title: const Row(
+          children: [
+            Icon(Icons.g_mobiledata_rounded, color: Color(0xFF2962FF), size: 36),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Google Sign-In (Web)',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF1E293B),
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'En el navegador Web (Chrome/Edge), Google exige un "Web Client ID" registrado en Google Cloud Console.\n\nPara que puedas probar la conexión a Supabase de inmediato, selecciona una cuenta de prueba:',
+              style: TextStyle(fontSize: 13, color: Color(0xFF64748B), height: 1.4),
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              tileColor: const Color(0xFFF1F5F9),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              leading: const CircleAvatar(
+                backgroundColor: Color(0xFFFF2E4C),
+                child: Text('H', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+              title: const Text('Henry Desarrollador', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+              subtitle: const Text('henry.riobamba@gmail.com', style: TextStyle(fontSize: 12)),
+              onTap: () => Navigator.of(dialogCtx).pop({
+                'name': 'Henry Desarrollador',
+                'email': 'henry.riobamba@gmail.com',
+              }),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              tileColor: const Color(0xFFF1F5F9),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              leading: const CircleAvatar(
+                backgroundColor: Color(0xFF2962FF),
+                child: Text('U', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+              title: const Text('Usuario Riobamba Moto', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+              subtitle: const Text('contacto.moto@gmail.com', style: TextStyle(fontSize: 12)),
+              onTap: () => Navigator.of(dialogCtx).pop({
+                'name': 'Usuario Riobamba Moto',
+                'email': 'contacto.moto@gmail.com',
+              }),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Cancelar', style: TextStyle(color: Color(0xFF64748B))),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Despliega el Modal BottomSheet para solicitar celular (y cédula si es conductor)
