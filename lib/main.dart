@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'core/supabase_constants.dart';
+import 'core/constants/supabase_constants.dart';
 import 'screens/auth_screen.dart';
 import 'screens/driver_home_screen.dart';
 import 'screens/driver_kyc_screen.dart';
@@ -13,17 +13,12 @@ Future<void> main() async {
   // Asegura la inicialización de los bindings del framework
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Inicialización de Supabase (PostgreSQL, Auth, Realtime)
-  // Usamos las constantes definidas en lib/core/supabase_constants.dart
-  try {
-    await Supabase.initialize(
-      url: SupabaseConstants.supabaseUrl,
-      // ignore: deprecated_member_use
-      anonKey: SupabaseConstants.supabaseAnonKey,
-    );
-  } catch (error) {
-    debugPrint('Aviso Supabase: Pendiente configurar credenciales reales ($error)');
-  }
+  // Inicialización de Supabase como Backend as a Service (BaaS)
+  await Supabase.initialize(
+    url: supabaseUrl,
+    // ignore: deprecated_member_use
+    anonKey: supabaseAnonKey,
+  );
 
   // Bloquea la orientación a vertical para uso seguro en soporte de motocicleta
   await SystemChrome.setPreferredOrientations([
