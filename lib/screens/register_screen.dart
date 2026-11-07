@@ -2,23 +2,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/constants/supabase_constants.dart';
-import 'driver_kyc_screen.dart';
+import 'driver_home_screen.dart';
 import 'login_screen.dart'; // Contiene enum UserRole
 import 'passenger_home_screen.dart';
 
-/// Pantalla de Registro de Nuevos Usuarios (RegisterScreen - Estilo "Rumbo").
+/// Pantalla de Registro de Nuevos Usuarios (RegisterScreen - Estilo "Rumbo")
 ///
-/// Características y Sistema de Diseño (Pixel-Perfect):
-/// - Fondo ultra claro (#FAFAFA)
-/// - Header con marca "rumbo" e insignia "RIOBAMBA, EC"
-/// - Toggle de roles dinámico e interactivo (Soy Pasajero / Soy Conductor)
-/// - Hero typography: "Tu ciudad." en negro + "A tu ritmo." en rojo carmesí (#FE2C55)
-/// - Subtítulo: "Muévete en moto por Riobamba."
-/// - Tarjeta blanca flotante (#FFFFFF) con bordes suaves y sombra difuminada
-/// - Formulario dinámico con campos base y campo condicional de Cédula (solo para conductor)
-/// - Botón dinámico según el rol: "Crear cuenta de Pasajero ->" / "Crear cuenta de Conductor ->"
-/// - Footer interactivo: "¿Ya tienes cuenta? Inicia sesión." que ejecuta Navigator.pop(context)
-/// - Inserción relacional completa en la tabla `perfiles` de Supabase PostgreSQL
+/// Soporta dos estados dinámicos completos:
+/// 1. Modo Pasajero (Rojo Carmesí #FE2C55):
+///    - Botón "Soy Pasajero" activo
+///    - Acento "A tu ritmo." en rojo
+///    - Subtítulo: "Muévete en moto por Riobamba."
+///    - Formulario base (Nombre, Correo, Celular, Contraseña)
+///    - Botón: "Crear cuenta de Pasajero ->"
+///    - Enlace inferior en rojo
+///
+/// 2. Modo Conductor (Azul Eléctrico #2962FF):
+///    - Botón "Soy Conductor" activo en azul
+///    - Acento "A tu ritmo." en azul
+///    - Subtítulo: "Conduce en Riobamba. Tú eliges el ritmo."
+///    - Formulario ampliado con campo animado de "Cédula de Identidad"
+///    - Botón: "Crear cuenta de Conductor ->"
+///    - Enlace inferior en azul
 class RegisterScreen extends StatefulWidget {
   final UserRole initialRole;
 
@@ -34,10 +39,10 @@ class RegisterScreen extends StatefulWidget {
 class _RegisterScreenState extends State<RegisterScreen> {
   final _formKey = GlobalKey<FormState>();
 
-  // Rol activo
-  late UserRole _selectedRole;
+  // 1. MANEJO DE ESTADO DINÁMICO
+  bool isPassenger = true;
 
-  // Controladores de texto del formulario
+  // Controladores de campos del formulario
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _phoneController = TextEditingController();
@@ -53,14 +58,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
   static const Color _cardBg = Color(0xFFFFFFFF);
   static const Color _inputBg = Color(0xFFF3F4F6);
   static const Color _rumboRed = Color(0xFFFE2C55);
+  static const Color _rumboBlue = Color(0xFF2962FF);
   static const Color _textPrimary = Color(0xFF111827);
   static const Color _textSecondary = Color(0xFF6B7280);
   static const Color _textMuted = Color(0xFF9CA3AF);
 
+  // Color de acento reactivo al estado
+  Color get _activeColor => isPassenger ? _rumboRed : _rumboBlue;
+
   @override
   void initState() {
     super.initState();
-    _selectedRole = widget.initialRole;
+    isPassenger = widget.initialRole == UserRole.passenger;
   }
 
   @override
@@ -82,7 +91,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
     FocusScope.of(context).unfocus();
     setState(() => _isLoading = true);
 
-    final isPassenger = _selectedRole == UserRole.passenger;
     final roleString = isPassenger ? 'pasajero' : 'conductor';
     final name = _nameController.text.trim();
     final email = _emailController.text.trim();
@@ -91,7 +99,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final password = _passwordController.text.trim();
 
     try {
-      // 1. Registro en Supabase Auth
+      // 1. Registro del usuario en Supabase Auth
       final AuthResponse res = await supabase.auth.signUp(
         email: email,
         password: password,
@@ -121,9 +129,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
       if (!mounted) return;
 
-      _showNotification('¡Cuenta creada con éxito! Bienvenido a rumbo, $name.');
+      _showNotification(
+        '¡Cuenta creada con éxito! Bienvenido a rumbo, $name.',
+        color: _activeColor,
+      );
 
-      // 3. Redirección según rol
+      // 3. Redirección contextual según el rol registrado
       if (isPassenger) {
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (context) => const PassengerHomeScreen()),
@@ -131,7 +142,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         );
       } else {
         Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (context) => const DriverKycScreen()),
+          MaterialPageRoute(builder: (context) => const DriverHomeScreen()),
           (route) => false,
         );
       }
@@ -144,7 +155,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  void _showNotification(String message, {bool isError = false}) {
+  void _showNotification(String message, {bool isError = false, Color? color}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -164,7 +175,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
           ],
         ),
-        backgroundColor: isError ? _rumboRed : const Color(0xFF10B981),
+        backgroundColor: isError ? _rumboRed : (color ?? const Color(0xFF10B981)),
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.all(16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -173,13 +184,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
   }
 
   // ===========================================================================
-  // INTERFAZ DE USUARIO: PIXEL-PERFECT (ESTILO RUMBO)
+  // INTERFAZ DE USUARIO: PIXEL-PERFECT REACTIVA
   // ===========================================================================
 
   @override
   Widget build(BuildContext context) {
-    final isPassenger = _selectedRole == UserRole.passenger;
-
     return Scaffold(
       backgroundColor: _bgCanvas,
       body: AnnotatedRegion<SystemUiOverlayStyle>(
@@ -199,16 +208,16 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 _buildHeader(),
                 const SizedBox(height: 20),
 
-                // 2. Toggle de Roles Dinámico (Soy Pasajero / Soy Conductor)
-                _buildRoleToggle(isPassenger),
+                // 2. Toggle de Roles Dinámico (Pasajero vs Conductor)
+                _buildRoleToggle(),
                 const SizedBox(height: 24),
 
-                // 3. Hero Texts ("Tu ciudad." / "A tu ritmo." / "Muévete en moto por Riobamba.")
+                // 3. Hero Texts Reactivos
                 _buildHeroText(),
                 const SizedBox(height: 24),
 
-                // 4. Tarjeta Flotante Blanca con Formulario Dinámico
-                _buildFormCard(isPassenger),
+                // 4. Tarjeta Flotante Blanca con Formulario Inteligente
+                _buildFormCard(),
                 const SizedBox(height: 24),
 
                 // 5. Footer "¿Ya tienes cuenta? Inicia sesión."
@@ -227,7 +236,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        // Logo rumbo
+        // Isotipo oficial rumbo
         Row(
           children: [
             Container(
@@ -289,10 +298,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  /// 2. Toggle de Roles Dinámico: Contenedor horizontal superior
-  /// Si es Pasajero: Botón iluminado en rojo carmesí con texto blanco.
-  /// Si es Conductor: Fondo gris con texto oscuro (y viceversa al cambiar el rol).
-  Widget _buildRoleToggle(bool isPassenger) {
+  /// 2. Toggle de Roles Dinámico:
+  /// - Si `isPassenger == true`: "Soy Pasajero" se ilumina en Rojo Carmesí (#FE2C55).
+  /// - Si `isPassenger == false`: "Soy Conductor" se ilumina en Azul Eléctrico (#2962FF).
+  Widget _buildRoleToggle() {
     return Container(
       height: 48,
       padding: const EdgeInsets.all(4),
@@ -308,7 +317,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
               onTap: () {
                 if (!isPassenger) {
                   HapticFeedback.lightImpact();
-                  setState(() => _selectedRole = UserRole.passenger);
+                  setState(() => isPassenger = true);
                 }
               },
               child: AnimatedContainer(
@@ -346,19 +355,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
               onTap: () {
                 if (isPassenger) {
                   HapticFeedback.lightImpact();
-                  setState(() => _selectedRole = UserRole.driver);
+                  setState(() => isPassenger = false);
                 }
               },
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 250),
                 curve: Curves.easeInOut,
                 decoration: BoxDecoration(
-                  color: !isPassenger ? _rumboRed : Colors.transparent,
+                  color: !isPassenger ? _rumboBlue : Colors.transparent,
                   borderRadius: BorderRadius.circular(26),
                   boxShadow: !isPassenger
                       ? [
                           BoxShadow(
-                            color: _rumboRed.withValues(alpha: 0.35),
+                            color: _rumboBlue.withValues(alpha: 0.35),
                             blurRadius: 10,
                             offset: const Offset(0, 3),
                           ),
@@ -382,8 +391,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  /// 3. Hero Texts: "Tu ciudad." en negro, "A tu ritmo." en rojo carmesí
+  /// 3. Hero Texts Reactivos:
+  /// - Título secundario: Pasa de rojo (#FE2C55) a azul (#2962FF).
+  /// - Subtítulo: "Muévete en moto por Riobamba." vs "Conduce en Riobamba. Tú eliges el ritmo."
   Widget _buildHeroText() {
+    final subtitle = isPassenger
+        ? 'Muévete en moto por Riobamba.'
+        : 'Conduce en Riobamba. Tú eliges el ritmo.';
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -397,32 +412,38 @@ class _RegisterScreenState extends State<RegisterScreen> {
             letterSpacing: -0.8,
           ),
         ),
-        const Text(
-          'A tu ritmo.',
+        AnimatedDefaultTextStyle(
+          duration: const Duration(milliseconds: 250),
           style: TextStyle(
             fontSize: 38,
             fontWeight: FontWeight.w900,
-            color: _rumboRed,
+            color: _activeColor,
             height: 1.1,
             letterSpacing: -0.8,
+            fontFamily: 'Inter',
           ),
+          child: const Text('A tu ritmo.'),
         ),
         const SizedBox(height: 10),
-        const Text(
-          'Muévete en moto por Riobamba.',
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w400,
-            color: _textSecondary,
-            height: 1.3,
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          child: Text(
+            subtitle,
+            key: ValueKey<bool>(isPassenger),
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+              color: _textSecondary,
+              height: 1.3,
+            ),
           ),
         ),
       ],
     );
   }
 
-  /// 4. Tarjeta Flotante Blanca con Formulario Dinámico (#FFFFFF, radius 24, sombra suave)
-  Widget _buildFormCard(bool isPassenger) {
+  /// 4. Tarjeta Flotante Blanca con Formulario Inteligente
+  Widget _buildFormCard() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 26),
       decoration: BoxDecoration(
@@ -502,9 +523,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 return null;
               },
             ),
-            const SizedBox(height: 14),
 
-            // Campo 4: Cédula de Identidad (Condicional: SOLO si es Conductor)
+            // Campo 4: Cédula de Identidad (Animado: SOLO visible en modo Conductor)
             AnimatedSize(
               duration: const Duration(milliseconds: 300),
               curve: Curves.easeInOut,
@@ -512,10 +532,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   ? Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        const SizedBox(height: 14),
                         _buildInputField(
                           controller: _cedulaController,
                           label: 'Cédula de Identidad',
-                          hint: '10 dígitos (Ecuador)',
+                          hint: '0601234567',
                           icon: Icons.badge_outlined,
                           keyboardType: TextInputType.number,
                           validator: (val) {
@@ -530,17 +551,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                             return null;
                           },
                         ),
-                        const Padding(
-                          padding: EdgeInsets.only(left: 8, top: 4, bottom: 10),
-                          child: Text(
-                            '🛡️ Requerido por seguridad para conductores en Riobamba',
-                            style: TextStyle(fontSize: 11, color: _textSecondary),
-                          ),
-                        ),
                       ],
                     )
                   : const SizedBox.shrink(),
             ),
+            const SizedBox(height: 14),
 
             // Campo 5: Contraseña (Siempre visible)
             _buildInputField(
@@ -573,8 +588,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
             const SizedBox(height: 24),
 
-            // Botón Principal Dinámico: "Crear cuenta de Pasajero ->" o "Crear cuenta de Conductor ->"
-            _buildPrimaryButton(isPassenger),
+            // Botón Principal Reactivo (Rojo o Azul según rol)
+            _buildPrimaryButton(),
           ],
         ),
       ),
@@ -652,21 +667,23 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  /// Botón Principal: Rojo carmesí sólido con texto dinámico y glow suave
-  Widget _buildPrimaryButton(bool isPassenger) {
+  /// Botón Principal Reactivo:
+  /// - Si `isPassenger == true`: Fondo Rojo Carmesí (#FE2C55), texto "Crear cuenta de Pasajero ->"
+  /// - Si `isPassenger == false`: Fondo Azul Eléctrico (#2962FF), texto "Crear cuenta de Conductor ->"
+  Widget _buildPrimaryButton() {
     final buttonText = isPassenger
         ? 'Crear cuenta de Pasajero'
         : 'Crear cuenta de Conductor';
 
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
+      duration: const Duration(milliseconds: 250),
       height: 54,
       decoration: BoxDecoration(
-        color: _rumboRed,
+        color: _activeColor,
         borderRadius: BorderRadius.circular(14),
         boxShadow: [
           BoxShadow(
-            color: _rumboRed.withValues(alpha: 0.38),
+            color: _activeColor.withValues(alpha: 0.38),
             blurRadius: 18,
             offset: const Offset(0, 6),
           ),
@@ -709,7 +726,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
     );
   }
 
-  /// 5. Footer Inferior: "¿Ya tienes cuenta? Inicia sesión." que ejecuta Navigator.pop(context)
+  /// 5. Footer Inferior:
+  /// "¿Ya tienes cuenta? Inicia sesión."
+  /// El texto interactivo "Inicia sesión." cambia dinámicamente a Rojo o Azul según el estado.
   Widget _buildFooter() {
     return Center(
       child: GestureDetector(
@@ -720,19 +739,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 8),
           child: RichText(
-            text: const TextSpan(
-              style: TextStyle(
+            text: TextSpan(
+              style: const TextStyle(
                 fontSize: 14,
                 color: _textSecondary,
                 fontWeight: FontWeight.w500,
                 fontFamily: 'Inter',
               ),
               children: [
-                TextSpan(text: '¿Ya tienes cuenta? '),
+                const TextSpan(text: '¿Ya tienes cuenta? '),
                 TextSpan(
                   text: 'Inicia sesión.',
                   style: TextStyle(
-                    color: _rumboRed,
+                    color: _activeColor,
                     fontWeight: FontWeight.w800,
                   ),
                 ),
