@@ -170,40 +170,42 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen> {
             // Píldora Flotante: "Moto a 3 min"
             Marker(
               point: const LatLng(-1.6605, -78.6660),
-              width: 140,
-              height: 40,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.08),
-                      blurRadius: 10,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      Icons.two_wheeler_rounded,
-                      color: _rumboRed,
-                      size: 16,
-                    ),
-                    SizedBox(width: 6),
-                    Text(
-                      'Moto a 3 min',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: _textPrimary,
+              width: 200,
+              height: 48,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.08),
+                        blurRadius: 10,
+                        offset: const Offset(0, 3),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.two_wheeler_rounded,
+                        color: _rumboRed,
+                        size: 16,
+                      ),
+                      SizedBox(width: 6),
+                      Text(
+                        'Moto a 3 min',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: _textPrimary,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -211,7 +213,7 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen> {
             // Marcador de Destino: Bandera roja en Terminal Terrestre
             Marker(
               point: _terminalCoords,
-              width: 140,
+              width: 180,
               height: 80,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -383,14 +385,25 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen> {
                             width: 42,
                             height: 42,
                             decoration: BoxDecoration(
+                              color: _inputBg,
                               shape: BoxShape.circle,
                               border: Border.all(color: _inputBg, width: 2),
-                              image: const DecorationImage(
-                                image: NetworkImage(
-                                  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
-                                ),
-                                fit: BoxFit.cover,
-                              ),
+                            ),
+                            clipBehavior: Clip.antiAlias,
+                            child: Image.network(
+                              'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  color: _rumboRed.withValues(alpha: 0.12),
+                                  alignment: Alignment.center,
+                                  child: const Icon(
+                                    Icons.person_rounded,
+                                    color: _rumboRed,
+                                    size: 22,
+                                  ),
+                                );
+                              },
                             ),
                           ),
                           const SizedBox(height: 3),
