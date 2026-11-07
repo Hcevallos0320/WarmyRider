@@ -11,8 +11,8 @@ void main() {
     expect(find.text('RIOBAMBA, EC'), findsOneWidget);
 
     // Verificar textos de bienvenida
-    expect(find.text('Tu ciudad.'), findsOneWidget);
-    expect(find.text('A tu ritmo.'), findsOneWidget);
+    expect(find.textContaining('Tu ciudad'), findsOneWidget);
+    expect(find.textContaining('A tu ritmo'), findsOneWidget);
 
     // Verificar selector de roles interactivo
     expect(find.text('Soy Pasajero'), findsOneWidget);

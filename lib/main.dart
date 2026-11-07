@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core/constants/supabase_constants.dart';
 import 'screens/auth_screen.dart';
+import 'screens/auth_screen_v2.dart';
 import 'screens/driver_home_screen.dart';
 import 'screens/driver_kyc_screen.dart';
 import 'screens/passenger_home_screen.dart';
@@ -55,12 +56,13 @@ class RiobambaMotoApp extends StatelessWidget {
       theme: AppTheme.darkTheme,
       darkTheme: AppTheme.darkTheme,
 
-      // Pantalla inicial: Autenticación unificada (Pasajero & Conductor)
-      home: const AuthScreen(),
+      // Pantalla inicial: Nueva pantalla de autenticación Rumbo V2
+      home: const AuthScreenV2(),
 
       // Rutas con nombre para navegación limpia
       routes: {
-        '/auth': (context) => const AuthScreen(),
+        '/auth': (context) => const AuthScreenV2(),
+        '/auth_v1': (context) => const AuthScreen(),
         '/passenger_home': (context) => const PassengerHomeScreen(),
         '/driver_home': (context) => const DriverHomeScreen(),
         '/driver_kyc': (context) => const DriverKycScreen(),
