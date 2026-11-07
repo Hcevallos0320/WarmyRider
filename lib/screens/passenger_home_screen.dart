@@ -1,31 +1,32 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
-import '../theme/app_colors.dart';
-import 'auth_screen.dart';
-import 'driver_home_screen.dart';
+import '../core/constants/supabase_constants.dart';
+import 'login_screen.dart';
 
-/// Modelo de referencia geográfica para lugares de Riobamba
-class RiobambaPlace {
-  final String name;
-  final String address;
-  final LatLng coordinates;
-  final IconData icon;
-
-  const RiobambaPlace({
-    required this.name,
-    required this.address,
-    required this.coordinates,
-    required this.icon,
-  });
-}
-
-/// Pantalla Principal del Pasajero con Arquitectura "Split-HUD" (Modo Claro)
-/// - Cápsula Superior Flotante: Origen (Punto de Recogida) + Perfil Bottom-Up + SOS
-/// - Consola Inferior Flotante: Destino (Punto de Llegada) + Chips Rápidos + Píldoras de Tarifa + Pedir Moto
-/// - Fondo: Mapa real de OpenStreetMap (Light) con GPS y tracking de motos
+/// Pantalla Principal del Pasajero (PassengerHomeScreen - Split-HUD Light Mode)
+///
+/// Arquitectura Visual y Funcional (Réplica 100% fiel de la maqueta):
+/// 1. Scaffold con Drawer lateral (Historial, Soporte, Perfil y Cerrar Sesión).
+/// 2. Stack principal con mapa interactivo centrado en Riobamba (ESPOCH -> Terminal Terrestre).
+/// 3. Tarjeta Superior Flotante:
+///    - Botón de Menú lateral (`Icons.menu`).
+///    - Foto de perfil con calificación "4.95 ⭐".
+///    - Textos: "Punto de Recogida", "• ESPOCH" (Grande, bold) y "Entrada principal".
+///    - Botón de GPS / Target circular verde claro con ícono verde oscuro.
+/// 4. Elementos en el Mapa:
+///    - Marcador de origen (ESPOCH con halo rosa/rojo).
+///    - Marcador de destino (Terminal Terrestre con bandera roja).
+///    - Ruta en polilínea roja carmesí siguiendo las calles de Riobamba.
+///    - Píldora flotante: "🏍️ Moto a 3 min".
+///    - Botón de recentrado flotante a la derecha.
+/// 5. Tarjeta Inferior Flotante (Destino y Tarifa):
+///    - Input de Punto de Llegada ("Terminal Terrestre" con pin rojo y lápiz de edición).
+///    - Chips rápidos de acceso: 🏠 Casa, 💼 Trabajo, 🛍️ Paseo Shopping.
+///    - Sección "Elige tu tarifa" con distancia/tiempo "2.4 km · 8 min".
+///    - Opciones de tarifa interactivas: $1.00, ✔️ $1.25 (Activa con borde rojo), $1.50.
+///    - Botón principal de ancho completo "-> Pedir Moto" con sombra roja difuminada.
 class PassengerHomeScreen extends StatefulWidget {
   const PassengerHomeScreen({super.key});
 
@@ -33,1598 +34,1045 @@ class PassengerHomeScreen extends StatefulWidget {
   State<PassengerHomeScreen> createState() => _PassengerHomeScreenState();
 }
 
-class _PassengerHomeScreenState extends State<PassengerHomeScreen>
-    with SingleTickerProviderStateMixin {
+class _PassengerHomeScreenState extends State<PassengerHomeScreen> {
+  // Clave global para controlar el Scaffold y el Drawer
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // Controlador del mapa
   final MapController _mapController = MapController();
 
-  // Lugares emblemáticos de Riobamba para acceso rápido
-  final List<RiobambaPlace> _riobambaPlaces = const [
-    RiobambaPlace(
-      name: 'Terminal Terrestre',
-      address: 'Av. La Prensa y Daniel León Borja',
-      coordinates: LatLng(-1.6702, -78.6433),
-      icon: Icons.directions_bus_rounded,
-    ),
-    RiobambaPlace(
-      name: 'Paseo Shopping',
-      address: 'Av. Antonio José de Sucre',
-      coordinates: LatLng(-1.6601, -78.6655),
-      icon: Icons.shopping_bag_rounded,
-    ),
-    RiobambaPlace(
-      name: 'UNACH',
-      address: 'Av. Antonio José de Sucre (Campus Norte)',
-      coordinates: LatLng(-1.6515, -78.6534),
-      icon: Icons.school_rounded,
-    ),
-    RiobambaPlace(
-      name: 'Centro',
-      address: 'Parque Maldonado / Catedral de Riobamba',
-      coordinates: LatLng(-1.6728, -78.6475),
-      icon: Icons.account_balance_rounded,
-    ),
-    RiobambaPlace(
-      name: 'ESPOCH',
-      address: 'Panamericana Sur km 1 1/2',
-      coordinates: LatLng(-1.6568, -78.6792),
-      icon: Icons.school_outlined,
-    ),
+  // Coordenadas emblemáticas de Riobamba
+  static const LatLng _espochCoords = LatLng(-1.6565, -78.6775);
+  static const LatLng _terminalCoords = LatLng(-1.6702, -78.6433);
+  static const LatLng _mapCenterCoords = LatLng(-1.6635, -78.6580);
+
+  // Ruta trazada entre ESPOCH y Terminal Terrestre
+  final List<LatLng> _routePoints = const [
+    LatLng(-1.6565, -78.6775),
+    LatLng(-1.6600, -78.6710),
+    LatLng(-1.6655, -78.6650),
+    LatLng(-1.6580, -78.6550),
+    LatLng(-1.6640, -78.6470),
+    LatLng(-1.6702, -78.6433),
   ];
 
-  // Puntos de Ruta en Riobamba (Split-HUD: Origen arriba, Destino abajo)
-  LatLng _originCoordinates = const LatLng(-1.6568, -78.6792);
-  String _originAddress = 'ESPOCH (Puerta Principal)';
+  // Estado del destino y tarifa seleccionada
+  String _destinationName = 'Terminal Terrestre';
+  String _selectedFare = '1.25';
+  bool _isRequestingRide = false;
 
-  LatLng _destinationCoordinates = const LatLng(-1.6702, -78.6433);
-  String _destinationAddress = 'Terminal Terrestre Riobamba';
-  String _selectedPlaceChip = 'Terminal Terrestre';
-
-  // Métricas del viaje
-  double _distanceKm = 2.5;
-  int _estimatedMinutes = 6;
-
-  // Barra de Píldoras de Tarifa
-  final List<double> _farePills = const [1.00, 1.25, 1.50, 1.75, 2.00];
-  double _selectedFare = 1.25;
-
-  // Preferencias de viaje
-  String _paymentMethod = 'DeUna!'; // 'DeUna!' o 'Efectivo'
-  bool _hasBackpack = true;
-
-  // Estado del GPS y animación de radar
-  bool _isLocatingGps = false;
-  late final AnimationController _pulseController;
-
-  // Motocicletas cercanas simuladas en Riobamba
-  final List<LatLng> _mockDrivers = const [
-    LatLng(-1.6595, -78.6730), // Cerca de ESPOCH
-    LatLng(-1.6635, -78.6580), // Av. Daniel León Borja
-    LatLng(-1.6680, -78.6490), // Cerca de Terminal
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1400),
-    )..repeat(reverse: true);
-
-    _recalculateTripMetrics();
-  }
-
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    super.dispose();
-  }
-
-  /// Recalcula la distancia y actualiza la tarifa sugerida
-  void _recalculateTripMetrics() {
-    const Distance distanceCalculator = Distance();
-    final meters = distanceCalculator.as(
-      LengthUnit.Meter,
-      _originCoordinates,
-      _destinationCoordinates,
-    );
-
-    setState(() {
-      _distanceKm = double.parse((meters / 1000).toStringAsFixed(1));
-      if (_distanceKm < 0.5) _distanceKm = 0.5;
-      _estimatedMinutes = (_distanceKm * 2.3).round() + 1;
-
-      // Sugerir la píldora correspondiente según distancia
-      if (_distanceKm <= 1.5) {
-        _selectedFare = 1.00;
-      } else if (_distanceKm <= 3.0) {
-        _selectedFare = 1.25;
-      } else if (_distanceKm <= 4.5) {
-        _selectedFare = 1.50;
-      } else if (_distanceKm <= 6.0) {
-        _selectedFare = 1.75;
-      } else {
-        _selectedFare = 2.00;
-      }
-    });
-  }
-
-  /// Selecciona un destino rápido desde los chips inferiores
-  void _selectQuickDestination(RiobambaPlace place) {
-    setState(() {
-      _selectedPlaceChip = place.name;
-      _destinationAddress = '${place.name} (${place.address})';
-      _destinationCoordinates = place.coordinates;
-    });
-
-    _recalculateTripMetrics();
-    _mapController.move(place.coordinates, 15.0);
-  }
-
-  /// Obtiene la ubicación GPS en vivo del dispositivo y reposiciona el mapa
-  Future<void> _getCurrentGpsLocation() async {
-    setState(() => _isLocatingGps = true);
-
-    try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              backgroundColor: AppColors.lightTextPrimary,
-              content: Text('Por favor enciende el GPS de tu dispositivo.', style: TextStyle(color: Colors.white)),
-            ),
-          );
-        }
-        setState(() => _isLocatingGps = false);
-        return;
-      }
-
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                backgroundColor: AppColors.statusOffline,
-                content: Text('Permiso de GPS denegado.', style: TextStyle(color: Colors.white)),
-              ),
-            );
-          }
-          setState(() => _isLocatingGps = false);
-          return;
-        }
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-
-      final userGps = LatLng(position.latitude, position.longitude);
-
-      setState(() {
-        _originCoordinates = userGps;
-        _originAddress = 'Mi Ubicación Actual (GPS en vivo)';
-      });
-
-      _recalculateTripMetrics();
-      _mapController.move(userGps, 16.0);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: AppColors.lightSurface,
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: AppColors.pickupGreen),
-            ),
-            content: const Row(
-              children: [
-                Icon(Icons.gps_fixed_rounded, color: AppColors.pickupGreen),
-                SizedBox(width: 10),
-                Text('Ubicación GPS sincronizada en Riobamba', style: TextStyle(color: AppColors.lightTextPrimary, fontWeight: FontWeight.bold)),
-              ],
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: AppColors.lightTextPrimary,
-            content: Text('No se pudo obtener el GPS: $e', style: const TextStyle(color: Colors.white)),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLocatingGps = false);
-      }
-    }
-  }
-
-  /// Despliega el Perfil del Pasajero desde abajo hacia arriba (Bottom-Up Profile Sheet)
-  void _openProfileBottomSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _PassengerProfileSheet(
-        onSwitchToDriver: () {
-          Navigator.of(ctx).pop();
-          Navigator.of(context).push(
-            MaterialPageRoute(builder: (context) => const DriverHomeScreen()),
-          );
-        },
-      ),
-    );
-  }
-
-  /// Despliega el selector modal para cambiar punto de recogida o destino
-  void _openLocationPickerSheet({required bool isOrigin}) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _LocationPickerSheet(
-        isOrigin: isOrigin,
-        currentAddress: isOrigin ? _originAddress : _destinationAddress,
-        places: _riobambaPlaces,
-        onPlaceSelected: (name, address, coords) {
-          setState(() {
-            if (isOrigin) {
-              _originAddress = '$name ($address)';
-              _originCoordinates = coords;
-            } else {
-              _destinationAddress = '$name ($address)';
-              _destinationCoordinates = coords;
-              _selectedPlaceChip = name;
-            }
-          });
-          _recalculateTripMetrics();
-          _mapController.move(coords, 15.5);
-          Navigator.of(ctx).pop();
-        },
-        onUseGps: () async {
-          Navigator.of(ctx).pop();
-          await _getCurrentGpsLocation();
-        },
-      ),
-    );
-  }
-
-  /// Modal de Asistencia SOS
-  void _openSosModal() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(22),
-        decoration: const BoxDecoration(
-          color: AppColors.lightSurface,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-          boxShadow: [
-            BoxShadow(color: Colors.black12, blurRadius: 20, offset: Offset(0, -4)),
-          ],
-        ),
-        child: SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: AppColors.lightBorder,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 18),
-              const Row(
-                children: [
-                  Icon(Icons.shield_rounded, color: AppColors.riobambaRed, size: 28),
-                  SizedBox(width: 12),
-                  Text(
-                    'Centro de Seguridad y SOS',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                      color: AppColors.lightTextPrimary,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Tu viaje en Riobamba está monitoreado. En caso de emergencia usa estas opciones:',
-                style: TextStyle(fontSize: 13, color: AppColors.lightTextSecondary),
-              ),
-              const SizedBox(height: 18),
-
-              ListTile(
-                tileColor: AppColors.lightSurfaceSubtle,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                leading: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF25D366).withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(Icons.share_location_rounded, color: Color(0xFF25D366)),
-                ),
-                title: const Text('Compartir mi ruta por WhatsApp', style: TextStyle(fontWeight: FontWeight.bold, color: AppColors.lightTextPrimary)),
-                subtitle: const Text('Envía tu ubicación y placa a un contacto', style: TextStyle(fontSize: 12, color: AppColors.lightTextSecondary)),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      backgroundColor: AppColors.lightTextPrimary,
-                      content: Text('Enlace de seguridad copiado al portapapeles.', style: TextStyle(color: Colors.white)),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-
-              ListTile(
-                tileColor: AppColors.statusOffline.withValues(alpha: 0.08),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  side: BorderSide(color: AppColors.statusOffline.withValues(alpha: 0.3)),
-                ),
-                leading: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: AppColors.statusOffline.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(Icons.emergency_rounded, color: AppColors.statusOffline),
-                ),
-                title: const Text('Llamar al ECU 911 Riobamba', style: TextStyle(fontWeight: FontWeight.w900, color: AppColors.statusOffline)),
-                subtitle: const Text('Respuesta inmediata de policía y ambulancia', style: TextStyle(fontSize: 12, color: AppColors.lightTextSecondary)),
-                onTap: () {
-                  Navigator.of(ctx).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      backgroundColor: AppColors.statusOffline,
-                      content: Text('Simulando llamada con ECU 911 Riobamba...', style: TextStyle(color: Colors.white)),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// Diálogo para cerrar sesión
-  void _handleLogout() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.lightSurface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('¿Cerrar Sesión?', style: TextStyle(color: AppColors.lightTextPrimary, fontWeight: FontWeight.bold)),
-        content: const Text(
-          'Volverás a la pantalla de autenticación para cambiar de cuenta o rol.',
-          style: TextStyle(color: AppColors.lightTextSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancelar', style: TextStyle(color: AppColors.lightTextSecondary)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.riobambaRed,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (context) => const AuthScreen()),
-                (route) => false,
-              );
-            },
-            child: const Text('Cerrar Sesión', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Dispara la búsqueda de la moto
-  void _requestRide() {
-    showModalBottomSheet(
-      context: context,
-      isDismissible: false,
-      enableDrag: false,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _PassengerRideSearchingSheet(
-        pickupAddress: _originAddress,
-        dropoffAddress: _destinationAddress,
-        fare: _selectedFare,
-        paymentMethod: _paymentMethod,
-        hasBackpack: _hasBackpack,
-        onCancel: () => Navigator.of(ctx).pop(),
-      ),
-    );
-  }
+  // Paleta de diseño oficial Rumbo
+  static const Color _rumboRed = Color(0xFFFE2C55);
+  static const Color _textPrimary = Color(0xFF111827);
+  static const Color _textSecondary = Color(0xFF6B7280);
+  static const Color _textMuted = Color(0xFF9CA3AF);
+  static const Color _inputBg = Color(0xFFF3F4F6);
 
   @override
   Widget build(BuildContext context) {
-    // Sombra sutil estándar de Light Mode
-    final cardShadow = [
-      BoxShadow(
-        color: Colors.black.withValues(alpha: 0.06),
-        blurRadius: 14,
-        offset: const Offset(0, 4),
-      ),
-    ];
-
     return Scaffold(
-      backgroundColor: AppColors.lightBackground,
-      body: Stack(
-        children: [
-          // 1. MAPA REAL CLARO DE FONDO (OpenStreetMap Estándar)
-          Positioned.fill(
-            child: FlutterMap(
-              mapController: _mapController,
-              options: MapOptions(
-                initialCenter: const LatLng(-1.6635, -78.6547),
-                initialZoom: 14.8,
-                minZoom: 12.0,
-                maxZoom: 18.5,
-              ),
-              children: [
-                // Capa Clara OpenStreetMap
-                TileLayer(
-                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'com.riobambamoto.app',
-                ),
+      key: _scaffoldKey,
+      drawer: _buildDrawer(),
+      body: AnnotatedRegion<SystemUiOverlayStyle>(
+        value: SystemUiOverlayStyle.dark.copyWith(
+          statusBarColor: Colors.transparent,
+          systemNavigationBarColor: Colors.white,
+          systemNavigationBarIconBrightness: Brightness.dark,
+        ),
+        child: Stack(
+          children: [
+            // 1. Capa de Fondo: Mapa Interactivo de Riobamba
+            _buildMapLayer(),
 
-                // Línea de Ruta Roja (#FF2E4C)
-                PolylineLayer(
-                  polylines: [
-                    Polyline(
-                      points: [_originCoordinates, _destinationCoordinates],
-                      color: AppColors.riobambaRed,
-                      strokeWidth: 4.8,
-                    ),
-                  ],
-                ),
+            // 2. Botón flotante para recentrar mapa
+            _buildRecenterButton(),
 
-                // Capa de Marcadores (Origen, Destino y Motos cercanas)
-                MarkerLayer(
-                  markers: [
-                    // Marcador Verde Origen (Con halo pulsante)
-                    Marker(
-                      point: _originCoordinates,
-                      width: 50,
-                      height: 50,
-                      child: AnimatedBuilder(
-                        animation: _pulseController,
-                        builder: (context, child) {
-                          return Stack(
-                            alignment: Alignment.center,
-                            children: [
-                              Container(
-                                width: 26 + (_pulseController.value * 20),
-                                height: 26 + (_pulseController.value * 20),
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: AppColors.pickupGreen.withValues(
-                                    alpha: (1.0 - _pulseController.value) * 0.45,
-                                  ),
-                                ),
-                              ),
-                              Container(
-                                width: 22,
-                                height: 22,
-                                decoration: BoxDecoration(
-                                  color: AppColors.pickupGreen,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 2.5),
-                                  boxShadow: const [
-                                    BoxShadow(color: Colors.black26, blurRadius: 6),
-                                  ],
-                                ),
-                                child: const Icon(Icons.person_pin_circle_rounded, size: 14, color: Colors.white),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-                    ),
+            // 3. Menú y Tarjeta Superior Flotante (Punto de Recogida)
+            _buildTopHud(),
 
-                    // Marcador Rojo Destino
-                    Marker(
-                      point: _destinationCoordinates,
-                      width: 44,
-                      height: 44,
-                      child: Container(
-                        padding: const EdgeInsets.all(7),
-                        decoration: BoxDecoration(
-                          color: AppColors.riobambaRed,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.white, width: 2.5),
-                          boxShadow: const [
-                            BoxShadow(color: Colors.black26, blurRadius: 8),
-                          ],
-                        ),
-                        child: const Icon(Icons.flag_rounded, color: Colors.white, size: 18),
-                      ),
-                    ),
+            // 4. Tarjeta Inferior Flotante (Destino, Chips Rápidos y Tarifa)
+            _buildBottomHud(),
+          ],
+        ),
+      ),
+    );
+  }
 
-                    // Motos cercanas simuladas
-                    ..._mockDrivers.map(
-                      (driverPos) => Marker(
-                        point: driverPos,
-                        width: 38,
-                        height: 38,
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: AppColors.riobambaRed, width: 2),
-                            boxShadow: const [
-                              BoxShadow(color: Colors.black12, blurRadius: 6),
-                            ],
-                          ),
-                          child: const Icon(
-                            Icons.two_wheeler_rounded,
-                            color: AppColors.riobambaRed,
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+  // ===========================================================================
+  // 1. CAPA DEL MAPA (FLUTTER MAP CON RUTA Y MARCADORES REALES DE RIOBAMBA)
+  // ===========================================================================
+
+  Widget _buildMapLayer() {
+    return FlutterMap(
+      mapController: _mapController,
+      options: const MapOptions(
+        initialCenter: _mapCenterCoords,
+        initialZoom: 14.5,
+        minZoom: 11.0,
+        maxZoom: 18.0,
+      ),
+      children: [
+        // Capa de mosaicos OpenStreetMap Light
+        TileLayer(
+          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+          userAgentPackageName: 'com.riobamba.moto.warmi_rider',
+        ),
+
+        // Polilínea de ruta roja carmesí
+        PolylineLayer(
+          polylines: [
+            Polyline(
+              points: _routePoints,
+              color: _rumboRed,
+              strokeWidth: 4.5,
             ),
-          ),
+          ],
+        ),
 
-          // 2. PARTE SUPERIOR: CÁPSULA FLOTANTE (ORIGEN Y PERFIL) - MODO CLARO
-          Positioned(
-            top: 0,
-            left: 14,
-            right: 14,
-            child: SafeArea(
-              bottom: false,
-              child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.lightSurface,
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: cardShadow,
-                  border: Border.all(color: AppColors.lightBorder),
+        // Marcadores en el mapa
+        MarkerLayer(
+          markers: [
+            // Marcador de Origen: ESPOCH con halo rosa suave
+            Marker(
+              point: _espochCoords,
+              width: 50,
+              height: 50,
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: _rumboRed.withValues(alpha: 0.22),
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 16,
+                    height: 16,
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: Container(
+                      width: 9,
+                      height: 9,
+                      decoration: const BoxDecoration(
+                        color: _rumboRed,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
                 ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Fila Superior: Perfil a la izquierda y Botones SOS / Salir a la derecha
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        // Botón de Perfil del Usuario (Abre Bottom Sheet)
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(20),
-                            onTap: _openProfileBottomSheet,
-                            child: Container(
-                              padding: const EdgeInsets.fromLTRB(4, 4, 12, 4),
-                              decoration: BoxDecoration(
-                                color: AppColors.lightSurfaceSubtle,
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: AppColors.lightBorder),
-                              ),
-                              child: const Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  CircleAvatar(
-                                    radius: 15,
-                                    backgroundColor: AppColors.riobambaRed,
-                                    child: Text('H', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13)),
-                                  ),
-                                  SizedBox(width: 8),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        'Henry C.',
-                                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w900, color: AppColors.lightTextPrimary),
-                                      ),
-                                      Row(
-                                        children: [
-                                          Icon(Icons.star_rounded, size: 13, color: Colors.amber),
-                                          SizedBox(width: 2),
-                                          Text(
-                                            '4.95',
-                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.amber),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                  ),
-                                  SizedBox(width: 6),
-                                  Icon(Icons.keyboard_arrow_up_rounded, color: AppColors.lightTextSecondary, size: 18),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
+              ),
+            ),
 
-                        // Acciones: SOS y Salir
-                        Row(
-                          children: [
-                            Material(
-                              color: AppColors.lightSurfaceSubtle,
-                              borderRadius: BorderRadius.circular(14),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(14),
-                                onTap: _openSosModal,
-                                child: Container(
-                                  padding: const EdgeInsets.all(9),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(14),
-                                    border: Border.all(color: AppColors.riobambaRed.withValues(alpha: 0.2)),
-                                  ),
-                                  child: const Icon(Icons.shield_rounded, color: AppColors.riobambaRed, size: 20),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Material(
-                              color: AppColors.lightSurfaceSubtle,
-                              borderRadius: BorderRadius.circular(14),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(14),
-                                onTap: _handleLogout,
-                                child: Container(
-                                  padding: const EdgeInsets.all(9),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(14),
-                                    border: Border.all(color: AppColors.lightBorder),
-                                  ),
-                                  child: const Icon(Icons.logout_rounded, color: AppColors.lightTextSecondary, size: 18),
-                                ),
-                              ),
-                            ),
-                          ],
+            // Píldora Flotante: "Moto a 3 min"
+            Marker(
+              point: const LatLng(-1.6605, -78.6660),
+              width: 140,
+              height: 40,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.08),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.two_wheeler_rounded,
+                      color: _rumboRed,
+                      size: 16,
+                    ),
+                    SizedBox(width: 6),
+                    Text(
+                      'Moto a 3 min',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: _textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Marcador de Destino: Bandera roja en Terminal Terrestre
+            Marker(
+              point: _terminalCoords,
+              width: 140,
+              height: 80,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: _rumboRed,
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _rumboRed.withValues(alpha: 0.35),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
                         ),
                       ],
                     ),
-
-                    const SizedBox(height: 10),
-
-                    // Fila Inferior (Dentro de la misma tarjeta): Selector de Punto de Recogida y Botón GPS
-                    Material(
-                      color: AppColors.lightSurfaceSubtle,
-                      borderRadius: BorderRadius.circular(16),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(16),
-                        onTap: () => _openLocationPickerSheet(isOrigin: true),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 12,
-                                height: 12,
-                                decoration: const BoxDecoration(
-                                  color: AppColors.pickupGreen,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'PUNTO DE RECOGIDA',
-                                      style: TextStyle(
-                                        fontSize: 9,
-                                        fontWeight: FontWeight.w800,
-                                        color: AppColors.pickupGreen,
-                                        letterSpacing: 0.5,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 1),
-                                    Text(
-                                      _originAddress,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w800,
-                                        color: AppColors.lightTextPrimary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-
-                              // Botón de centrado GPS en Azul Eléctrico
-                              Material(
-                                color: Colors.transparent,
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(12),
-                                  onTap: _isLocatingGps ? null : _getCurrentGpsLocation,
-                                  child: Container(
-                                    padding: const EdgeInsets.all(7),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.riobambaBlue.withValues(alpha: 0.12),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: _isLocatingGps
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.riobambaBlue),
-                                          )
-                                        : const Icon(Icons.my_location_rounded, color: AppColors.riobambaBlue, size: 18),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
+                    alignment: Alignment.center,
+                    child: const Icon(
+                      Icons.flag_rounded,
+                      color: Colors.white,
+                      size: 22,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
                         ),
+                      ],
+                    ),
+                    child: const Text(
+                      'Terminal Terrestre',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: _textPrimary,
                       ),
                     ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          // 3. PARTE INFERIOR: CONSOLA FLOTANTE (DESTINO Y VIAJE) - MODO CLARO
-          Positioned(
-            bottom: 0,
-            left: 14,
-            right: 14,
-            child: SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: AppColors.lightSurface,
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: cardShadow,
-                    border: Border.all(color: AppColors.lightBorder),
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // Caja de Punto de Llegada (Destino)
-                      Material(
-                        color: AppColors.lightSurfaceSubtle,
-                        borderRadius: BorderRadius.circular(16),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(16),
-                          onTap: () => _openLocationPickerSheet(isOrigin: false),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                              border: Border.all(
-                                color: AppColors.riobambaRed.withValues(alpha: 0.35),
-                                width: 1.2,
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(7),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.riobambaRed.withValues(alpha: 0.12),
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(Icons.location_on_rounded, color: AppColors.riobambaRed, size: 18),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      const Text(
-                                        'DESTINO DEL VIAJE',
-                                        style: TextStyle(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w800,
-                                          color: AppColors.riobambaRed,
-                                          letterSpacing: 0.6,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 1),
-                                      Text(
-                                        _destinationAddress,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w800,
-                                          color: AppColors.lightTextPrimary,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const Icon(Icons.search_rounded, color: AppColors.lightTextSecondary, size: 20),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-
-                      const SizedBox(height: 10),
-
-                      // Chips Rápidos de Riobamba (Scroll Horizontal)
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        physics: const BouncingScrollPhysics(),
-                        child: Row(
-                          children: _riobambaPlaces.map((place) {
-                            final isSelected = _selectedPlaceChip == place.name;
-                            return Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: ChoiceChip(
-                                avatar: Icon(
-                                  place.icon,
-                                  size: 15,
-                                  color: isSelected ? AppColors.riobambaRed : AppColors.lightTextSecondary,
-                                ),
-                                label: Text(place.name),
-                                selected: isSelected,
-                                selectedColor: AppColors.riobambaRed.withValues(alpha: 0.12),
-                                backgroundColor: AppColors.lightSurfaceSubtle,
-                                labelStyle: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
-                                  color: isSelected ? AppColors.riobambaRed : AppColors.lightTextSecondary,
-                                ),
-                                side: BorderSide(
-                                  color: isSelected ? AppColors.riobambaRed : AppColors.lightBorder,
-                                ),
-                                onSelected: (_) => _selectQuickDestination(place),
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-                      const Divider(color: AppColors.lightBorder, height: 1),
-                      const SizedBox(height: 10),
-
-                      // Selector de Tarifa (Píldoras)
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text(
-                            'OFERTA DE TARIFA',
-                            style: TextStyle(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.lightTextSecondary,
-                              letterSpacing: 0.6,
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: AppColors.lightSurfaceSubtle,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Text(
-                              '$_distanceKm km • ~$_estimatedMinutes min',
-                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.pickupGreen),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-
-                      // Fila de Píldoras de Tarifa
-                      Row(
-                        children: _farePills.map((fare) {
-                          final isSelected = _selectedFare == fare;
-                          return Expanded(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 3),
-                              child: GestureDetector(
-                                onTap: () => setState(() => _selectedFare = fare),
-                                child: AnimatedContainer(
-                                  duration: const Duration(milliseconds: 200),
-                                  height: 38,
-                                  decoration: BoxDecoration(
-                                    color: isSelected ? AppColors.riobambaRed : AppColors.lightSurfaceSubtle,
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: isSelected ? AppColors.riobambaRed : AppColors.lightBorder,
-                                    ),
-                                    boxShadow: isSelected
-                                        ? [
-                                            BoxShadow(
-                                              color: AppColors.riobambaRed.withValues(alpha: 0.3),
-                                              blurRadius: 6,
-                                              offset: const Offset(0, 2),
-                                            ),
-                                          ]
-                                        : null,
-                                  ),
-                                  child: Center(
-                                    child: Text(
-                                      '\$${fare.toStringAsFixed(2)}',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: isSelected ? FontWeight.w900 : FontWeight.w700,
-                                        color: isSelected ? Colors.white : AppColors.lightTextPrimary,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      // Etiquetas de Viaje Rápidas (Pago + Mochila)
-                      Row(
-                        children: [
-                          GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                _paymentMethod = _paymentMethod == 'DeUna!' ? 'Efectivo' : 'DeUna!';
-                              });
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: AppColors.lightSurfaceSubtle,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: AppColors.lightBorder),
-                              ),
-                              child: Text(
-                                _paymentMethod == 'DeUna!' ? '📱 Pago con DeUna!' : '💵 Efectivo',
-                                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.lightTextPrimary),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-
-                          GestureDetector(
-                            onTap: () {
-                              setState(() => _hasBackpack = !_hasBackpack);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                              decoration: BoxDecoration(
-                                color: _hasBackpack ? AppColors.riobambaRed.withValues(alpha: 0.1) : AppColors.lightSurfaceSubtle,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: _hasBackpack ? AppColors.riobambaRed : AppColors.lightBorder,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.backpack_rounded,
-                                    size: 14,
-                                    color: _hasBackpack ? AppColors.riobambaRed : AppColors.lightTextSecondary,
-                                  ),
-                                  const SizedBox(width: 5),
-                                  Text(
-                                    '🎒 Llevo mochila',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.bold,
-                                      color: _hasBackpack ? AppColors.riobambaRed : AppColors.lightTextSecondary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-
-                      const SizedBox(height: 14),
-
-                      // Botón de Acción Principal en Rojo Carmesí
-                      SizedBox(
-                        height: 56,
-                        child: ElevatedButton(
-                          onPressed: _requestRide,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.riobambaRed,
-                            foregroundColor: Colors.white,
-                            elevation: 4,
-                            shadowColor: AppColors.riobambaRed.withValues(alpha: 0.4),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(16),
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.two_wheeler_rounded, color: Colors.white, size: 22),
-                              const SizedBox(width: 10),
-                              Text(
-                                'Pedir Moto • \$${_selectedFare.toStringAsFixed(2)}',
-                                style: const TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.w900,
-                                  letterSpacing: 0.3,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Hoja modal del Perfil del Pasajero desplegable de abajo hacia arriba (Bottom-Up Profile Sheet) - Modo Claro
-class _PassengerProfileSheet extends StatelessWidget {
-  final VoidCallback onSwitchToDriver;
-
-  const _PassengerProfileSheet({required this.onSwitchToDriver});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.82,
-      ),
-      padding: const EdgeInsets.fromLTRB(22, 14, 22, 24),
-      decoration: const BoxDecoration(
-        color: AppColors.lightSurface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        boxShadow: [
-          BoxShadow(color: Colors.black12, blurRadius: 25, offset: Offset(0, -4)),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(
-                width: 42,
-                height: 5,
-                decoration: BoxDecoration(
-                  color: AppColors.lightBorder,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
-            const SizedBox(height: 18),
-
-            // Tarjeta de Identidad del Pasajero
-            Row(
-              children: [
-                Stack(
-                  children: [
-                    Container(
-                      width: 68,
-                      height: 68,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: AppColors.riobambaRed, width: 2.2),
-                        color: AppColors.lightSurfaceSubtle,
-                      ),
-                      child: const Center(
-                        child: Text(
-                          'H',
-                          style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppColors.lightTextPrimary),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      bottom: 0,
-                      right: 0,
-                      child: Container(
-                        padding: const EdgeInsets.all(5),
-                        decoration: const BoxDecoration(
-                          color: AppColors.riobambaRed,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.camera_alt_rounded, size: 14, color: Colors.white),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(width: 16),
-
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text(
-                            'Henry C.',
-                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: AppColors.lightTextPrimary),
-                          ),
-                          SizedBox(width: 6),
-                          Icon(Icons.verified_rounded, size: 18, color: AppColors.pickupGreen),
-                        ],
-                      ),
-                      SizedBox(height: 3),
-                      Text(
-                        '+593 99 123 4567 • Riobamba',
-                        style: TextStyle(fontSize: 12, color: AppColors.lightTextSecondary),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 18),
-
-            // Estadísticas en 3 columnas
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              decoration: BoxDecoration(
-                color: AppColors.lightSurfaceSubtle,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.lightBorder),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceAround,
-                children: [
-                  _buildStatItem('PUNTUACIÓN', '4.95 ⭐', Colors.amber),
-                  Container(width: 1, height: 28, color: AppColors.lightBorder),
-                  _buildStatItem('VIAJES', '32', AppColors.lightTextPrimary),
-                  Container(width: 1, height: 28, color: AppColors.lightBorder),
-                  _buildStatItem('NIVEL', 'Pionero', AppColors.pickupGreen),
                 ],
               ),
             ),
-
-            const SizedBox(height: 18),
-
-            // Opciones de Configuración
-            _buildOptionTile(
-              icon: Icons.payments_rounded,
-              title: 'Método de Pago Predeterminado',
-              subtitle: 'DeUna! / Banco Pichincha',
-            ),
-            const SizedBox(height: 8),
-
-            _buildOptionTile(
-              icon: Icons.bookmark_added_rounded,
-              title: 'Direcciones Guardadas',
-              subtitle: 'Casa, ESPOCH, Trabajo',
-            ),
-            const SizedBox(height: 8),
-
-            _buildOptionTile(
-              icon: Icons.history_rounded,
-              title: 'Historial de Carreras',
-              subtitle: '32 viajes en Riobamba',
-            ),
-
-            const Spacer(),
-
-            // Botón Especial de Cambio de Rol en Azul Eléctrico (#2962FF)
-            SizedBox(
-              height: 54,
-              child: ElevatedButton(
-                onPressed: onSwitchToDriver,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.riobambaBlue,
-                  foregroundColor: Colors.white,
-                  elevation: 4,
-                  shadowColor: AppColors.riobambaBlue.withValues(alpha: 0.4),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                ),
-                child: const Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.sports_motorsports_rounded, color: Colors.white, size: 22),
-                    SizedBox(width: 10),
-                    Text(
-                      'Cambiar a Modo Conductor 🏍️',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0.3,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStatItem(String label, String value, Color valueColor) {
-    return Column(
-      children: [
-        Text(
-          label,
-          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppColors.lightTextSecondary, letterSpacing: 0.5),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          value,
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: valueColor),
         ),
       ],
     );
   }
 
-  Widget _buildOptionTile({required IconData icon, required String title, required String subtitle}) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.lightSurfaceSubtle,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.lightBorder),
-      ),
-      child: ListTile(
-        dense: true,
-        leading: Icon(icon, color: AppColors.lightTextSecondary, size: 22),
-        title: Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppColors.lightTextPrimary)),
-        subtitle: Text(subtitle, style: const TextStyle(fontSize: 11, color: AppColors.lightTextSecondary)),
-        trailing: const Icon(Icons.arrow_forward_ios_rounded, color: AppColors.lightTextSecondary, size: 13),
-      ),
-    );
-  }
-}
+  // ===========================================================================
+  // 2. BOTÓN DE RECENTRADO DE MAPA FLOTANTE
+  // ===========================================================================
 
-/// Hoja modal de búsqueda para cambiar punto de recogida o destino (Modo Claro)
-class _LocationPickerSheet extends StatefulWidget {
-  final bool isOrigin;
-  final String currentAddress;
-  final List<RiobambaPlace> places;
-  final Function(String name, String address, LatLng coords) onPlaceSelected;
-  final VoidCallback onUseGps;
-
-  const _LocationPickerSheet({
-    required this.isOrigin,
-    required this.currentAddress,
-    required this.places,
-    required this.onPlaceSelected,
-    required this.onUseGps,
-  });
-
-  @override
-  State<_LocationPickerSheet> createState() => _LocationPickerSheetState();
-}
-
-class _LocationPickerSheetState extends State<_LocationPickerSheet> {
-  final TextEditingController _searchController = TextEditingController();
-  late List<RiobambaPlace> _filteredPlaces;
-
-  @override
-  void initState() {
-    super.initState();
-    _filteredPlaces = widget.places;
-    _searchController.addListener(_filter);
-  }
-
-  void _filter() {
-    final query = _searchController.text.trim().toLowerCase();
-    setState(() {
-      if (query.isEmpty) {
-        _filteredPlaces = widget.places;
-      } else {
-        _filteredPlaces = widget.places.where((p) {
-          return p.name.toLowerCase().contains(query) || p.address.toLowerCase().contains(query);
-        }).toList();
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final accentColor = widget.isOrigin ? AppColors.pickupGreen : AppColors.riobambaRed;
-    final query = _searchController.text.trim();
-
-    return Container(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.of(context).size.height * 0.75,
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
-      decoration: const BoxDecoration(
-        color: AppColors.lightSurface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(width: 40, height: 5, decoration: BoxDecoration(color: AppColors.lightBorder, borderRadius: BorderRadius.circular(10))),
-            ),
-            const SizedBox(height: 16),
-
-            Row(
-              children: [
-                Icon(widget.isOrigin ? Icons.my_location_rounded : Icons.location_on_rounded, color: accentColor, size: 22),
-                const SizedBox(width: 10),
-                Text(
-                  widget.isOrigin ? 'PUNTO DE RECOGIDA' : 'PUNTO DE DESTINO',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: accentColor),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-
-            // Buscador
-            Container(
-              decoration: BoxDecoration(
-                color: AppColors.lightSurfaceSubtle,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: AppColors.lightBorder),
-              ),
-              child: TextField(
-                controller: _searchController,
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.lightTextPrimary),
-                cursorColor: accentColor,
-                decoration: InputDecoration(
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
-                  prefixIcon: Icon(Icons.search_rounded, color: accentColor, size: 22),
-                  hintText: widget.isOrigin ? 'Buscar recogida en Riobamba...' : 'Buscar destino en Riobamba...',
-                  hintStyle: const TextStyle(color: AppColors.lightTextSecondary, fontSize: 13),
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            // Usar GPS
-            ListTile(
-              tileColor: AppColors.lightSurfaceSubtle,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              leading: const Icon(Icons.gps_fixed_rounded, color: AppColors.pickupGreen, size: 20),
-              title: const Text('Usar mi ubicación GPS actual', style: TextStyle(fontWeight: FontWeight.bold, color: AppColors.lightTextPrimary)),
-              trailing: const Icon(Icons.arrow_forward_ios_rounded, color: AppColors.lightTextSecondary, size: 13),
-              onTap: widget.onUseGps,
-            ),
-            const SizedBox(height: 10),
-
-            if (query.isNotEmpty) ...[
-              ListTile(
-                tileColor: accentColor.withValues(alpha: 0.1),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                leading: Icon(Icons.pin_drop_rounded, color: accentColor, size: 20),
-                title: Text('Establecer "$query" en Riobamba', style: TextStyle(fontWeight: FontWeight.bold, color: accentColor)),
-                onTap: () => widget.onPlaceSelected(query, 'Ubicación personalizada', const LatLng(-1.6660, -78.6560)),
-              ),
-              const SizedBox(height: 10),
-            ],
-
-            Expanded(
-              child: ListView.separated(
-                physics: const BouncingScrollPhysics(),
-                itemCount: _filteredPlaces.length,
-                separatorBuilder: (context, index) => const Divider(color: AppColors.lightBorder, height: 1),
-                itemBuilder: (context, index) {
-                  final place = _filteredPlaces[index];
-                  return ListTile(
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    leading: Icon(place.icon, color: AppColors.lightTextPrimary, size: 20),
-                    title: Text(place.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppColors.lightTextPrimary)),
-                    subtitle: Text(place.address, style: const TextStyle(fontSize: 12, color: AppColors.lightTextSecondary)),
-                    onTap: () => widget.onPlaceSelected(place.name, place.address, place.coordinates),
-                  );
-                },
-              ),
+  Widget _buildRecenterButton() {
+    return Positioned(
+      right: 18,
+      bottom: 330, // Justo encima de la tarjeta inferior
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 12,
+              offset: const Offset(0, 3),
             ),
           ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(22),
+            onTap: () {
+              HapticFeedback.lightImpact();
+              _mapController.move(_mapCenterCoords, 14.5);
+            },
+            child: const Icon(
+              Icons.my_location_rounded,
+              color: _textPrimary,
+              size: 20,
+            ),
+          ),
         ),
       ),
     );
   }
-}
 
-/// Hoja modal de búsqueda con radar y asignación del motorizado (Modo Claro)
-class _PassengerRideSearchingSheet extends StatefulWidget {
-  final String pickupAddress;
-  final String dropoffAddress;
-  final double fare;
-  final String paymentMethod;
-  final bool hasBackpack;
-  final VoidCallback onCancel;
+  // ===========================================================================
+  // 3. MENÚ Y TARJETA SUPERIOR (PUNTO DE RECOGIDA)
+  // ===========================================================================
 
-  const _PassengerRideSearchingSheet({
-    required this.pickupAddress,
-    required this.dropoffAddress,
-    required this.fare,
-    required this.paymentMethod,
-    required this.hasBackpack,
-    required this.onCancel,
-  });
+  Widget _buildTopHud() {
+    return Positioned(
+      top: 0,
+      left: 0,
+      right: 0,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // Botón de Menú Hamburguesa flotante
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.08),
+                      blurRadius: 14,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(23),
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      _scaffoldKey.currentState?.openDrawer();
+                    },
+                    child: const Icon(
+                      Icons.menu_rounded,
+                      color: _textPrimary,
+                      size: 22,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
 
-  @override
-  State<_PassengerRideSearchingSheet> createState() => _PassengerRideSearchingSheetState();
-}
+              // Tarjeta Superior Flotante: Perfil, ESPOCH y Target verde
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.08),
+                        blurRadius: 18,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      // Lado Izquierdo: Foto circular y Calificación "4.95 ⭐"
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(color: _inputBg, width: 2),
+                              image: const DecorationImage(
+                                image: NetworkImage(
+                                  'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
+                                ),
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          const Text(
+                            '4.95 ⭐',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: _textPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(width: 14),
 
-class _PassengerRideSearchingSheetState extends State<_PassengerRideSearchingSheet> {
-  bool _driverFound = false;
-  Timer? _matchingTimer;
+                      // Centro: Textos en columna
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text(
+                              'Punto de Recogida',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                color: _textSecondary,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Row(
+                              children: const [
+                                Icon(
+                                  Icons.circle,
+                                  color: _rumboRed,
+                                  size: 8,
+                                ),
+                                SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    'ESPOCH',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w900,
+                                      color: _textPrimary,
+                                      letterSpacing: -0.3,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 2),
+                            const Text(
+                              'Entrada principal',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                color: _textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
 
-  @override
-  void initState() {
-    super.initState();
-    _matchingTimer = Timer(const Duration(milliseconds: 2600), () {
-      if (mounted) setState(() => _driverFound = true);
-    });
+                      // Lado Derecho: Botón circular verde claro con ícono GPS verde oscuro
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFE8F5E9),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Icon(
+                          Icons.gps_fixed_rounded,
+                          color: Color(0xFF2E7D32),
+                          size: 20,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
-  @override
-  void dispose() {
-    _matchingTimer?.cancel();
-    super.dispose();
+  // ===========================================================================
+  // 4. TARJETA INFERIOR (DESTINO, CHIPS RÁPIDOS Y SELECCIÓN DE TARIFA)
+  // ===========================================================================
+
+  Widget _buildBottomHud() {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Container(
+        padding: const EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 20,
+          bottom: 28,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 24,
+              offset: const Offset(0, -6),
+            ),
+          ],
+        ),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Barra pequeña superior de arrastre
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE5E7EB),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+
+              // A. Input de Destino (Punto de Llegada)
+              _buildDestinationCard(),
+              const SizedBox(height: 14),
+
+              // B. Chips Rápidos (Casa, Trabajo, Paseo Shopping)
+              _buildQuickChips(),
+              const SizedBox(height: 18),
+
+              // C. Sección de Tarifa (Encabezado y botones de precio)
+              _buildFareSection(),
+              const SizedBox(height: 20),
+
+              // D. Botón Principal: "Pedir Moto ->"
+              _buildRequestRideButton(),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  /// Input de Destino: Contenedor gris claro con pin rojo y lápiz
+  Widget _buildDestinationCard() {
     return Container(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
-      decoration: const BoxDecoration(
-        color: AppColors.lightSurface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-        boxShadow: [
-          BoxShadow(color: Colors.black12, blurRadius: 25, offset: Offset(0, -4)),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: _inputBg,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: _rumboRed.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            alignment: Alignment.center,
+            child: const Icon(
+              Icons.location_on_rounded,
+              color: _rumboRed,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Punto de Llegada',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: _textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _destinationName,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                    color: _textPrimary,
+                    letterSpacing: -0.3,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            icon: const Icon(
+              Icons.edit_outlined,
+              color: _textSecondary,
+              size: 19,
+            ),
+            onPressed: _showEditDestinationModal,
+          ),
         ],
       ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(width: 40, height: 5, decoration: BoxDecoration(color: AppColors.lightBorder, borderRadius: BorderRadius.circular(10))),
-            ),
-            const SizedBox(height: 18),
+    );
+  }
 
-            if (!_driverFound) ...[
-              const Center(
-                child: SizedBox(
-                  width: 48,
-                  height: 48,
-                  child: CircularProgressIndicator(color: AppColors.riobambaRed, strokeWidth: 3.5),
-                ),
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                'Buscando el motorizado más cercano...',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.lightTextPrimary),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Oferta: \$${widget.fare.toStringAsFixed(2)} • Pago: ${widget.paymentMethod}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 13, color: AppColors.lightTextSecondary),
-              ),
-              const SizedBox(height: 20),
-              OutlinedButton(
-                onPressed: widget.onCancel,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.statusOffline,
-                  side: const BorderSide(color: AppColors.statusOffline),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-                child: const Text('Cancelar Búsqueda', style: TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ] else ...[
-              Container(
-                padding: const EdgeInsets.all(14),
+  /// Chips Rápidos: Fila con 🏠 Casa, 💼 Trabajo, 🛍️ Paseo Shopping
+  Widget _buildQuickChips() {
+    final chips = [
+      {'icon': Icons.home_rounded, 'label': 'Casa'},
+      {'icon': Icons.work_rounded, 'label': 'Trabajo'},
+      {'icon': Icons.shopping_bag_rounded, 'label': 'Paseo Shopping'},
+    ];
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      physics: const BouncingScrollPhysics(),
+      child: Row(
+        children: chips.map((chip) {
+          final isSelected = _destinationName == chip['label'];
+
+          return Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: GestureDetector(
+              onTap: () {
+                HapticFeedback.lightImpact();
+                setState(() {
+                  _destinationName = chip['label'] as String;
+                });
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
-                  color: AppColors.pickupGreen.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.pickupGreen.withValues(alpha: 0.4)),
+                  color: isSelected ? _rumboRed.withValues(alpha: 0.1) : _inputBg,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: isSelected ? _rumboRed : Colors.transparent,
+                    width: 1.2,
+                  ),
                 ),
-                child: const Row(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.check_circle_rounded, color: AppColors.pickupGreen, size: 28),
-                    SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('¡Motorizado Confirmado!', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: AppColors.lightTextPrimary)),
-                          Text('Luis C. viene en su Bajaj Pulsar 200 • Casco limpio', style: TextStyle(fontSize: 13, color: AppColors.lightTextSecondary)),
-                        ],
+                    Icon(
+                      chip['icon'] as IconData,
+                      size: 14,
+                      color: isSelected ? _rumboRed : _textSecondary,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      chip['label'] as String,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isSelected ? _rumboRed : _textPrimary,
                       ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                decoration: BoxDecoration(
-                  color: AppColors.lightSurfaceSubtle,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.lightBorder),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Row(
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: AppColors.riobambaBlue,
-                          child: Icon(Icons.sports_motorsports_rounded, color: Colors.white),
-                        ),
-                        SizedBox(width: 12),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Luis C. (★ 4.9)', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.lightTextPrimary)),
-                            Text('Placa: HA-123B', style: TextStyle(fontSize: 12, color: AppColors.lightTextSecondary)),
-                          ],
-                        ),
-                      ],
-                    ),
-                    Text('\$${widget.fare.toStringAsFixed(2)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: AppColors.pickupGreen)),
-                  ],
-                ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  /// Sección de Tarifa: Encabezado con distancia/tiempo y 3 pastillas de precio
+  Widget _buildFareSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Fila de título y distancia
+        const Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Elige tu tarifa',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: _textPrimary,
               ),
-              const SizedBox(height: 18),
-              ElevatedButton(
-                onPressed: widget.onCancel,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.pickupGreen,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                ),
-                child: const Text('Entendido, esperando en el punto', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900)),
+            ),
+            Text(
+              '2.4 km · 8 min',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: _textSecondary,
               ),
-            ],
+            ),
           ],
         ),
+        const SizedBox(height: 12),
+
+        // Opciones de Precio ($1.00, ✔️ $1.25, $1.50)
+        Row(
+          children: [
+            _buildFareOption(price: '1.00', label: '\$1.00'),
+            const SizedBox(width: 10),
+            _buildFareOption(price: '1.25', label: '\$1.25', hasCheckmark: true),
+            const SizedBox(width: 10),
+            _buildFareOption(price: '1.50', label: '\$1.50'),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Pastilla individual de precio
+  Widget _buildFareOption({
+    required String price,
+    required String label,
+    bool hasCheckmark = false,
+  }) {
+    final isSelected = _selectedFare == price;
+
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          setState(() => _selectedFare = price);
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          height: 48,
+          decoration: BoxDecoration(
+            color: isSelected ? const Color(0xFFFFF1F3) : _inputBg,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isSelected ? _rumboRed : Colors.transparent,
+              width: 1.5,
+            ),
+          ),
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (isSelected && hasCheckmark) ...[
+                const Icon(
+                  Icons.check_circle_rounded,
+                  color: _rumboRed,
+                  size: 16,
+                ),
+                const SizedBox(width: 5),
+              ],
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: isSelected ? _rumboRed : _textPrimary,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Botón Principal: "Pedir Moto ->"
+  Widget _buildRequestRideButton() {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      height: 54,
+      decoration: BoxDecoration(
+        color: _rumboRed,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: _rumboRed.withValues(alpha: 0.38),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.transparent,
+          shadowColor: Colors.transparent,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        ),
+        onPressed: _isRequestingRide ? null : _handleRequestRide,
+        child: _isRequestingRide
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.2),
+              )
+            : const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.arrow_forward_rounded,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    'Pedir Moto',
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // ACCIONES Y MODALES
+  // ===========================================================================
+
+  void _handleRequestRide() {
+    HapticFeedback.heavyImpact();
+    setState(() => _isRequestingRide = true);
+
+    Future.delayed(const Duration(milliseconds: 1400), () {
+      if (!mounted) return;
+      setState(() => _isRequestingRide = false);
+
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle_rounded, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  '¡Viaje solicitado por \$$_selectedFare! Buscando conductores cercanos en Riobamba...',
+                  style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: _rumboRed,
+          behavior: SnackBarBehavior.floating,
+          margin: const EdgeInsets.all(16),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        ),
+      );
+    });
+  }
+
+  void _showEditDestinationModal() {
+    final controller = TextEditingController(text: _destinationName);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Container(
+        padding: EdgeInsets.only(
+          top: 20,
+          left: 20,
+          right: 20,
+          bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 24,
+        ),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFCBD5E1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              'Cambiar Punto de Llegada',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+                color: _textPrimary,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              decoration: BoxDecoration(
+                color: _inputBg,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: TextField(
+                controller: controller,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  icon: Icon(Icons.location_on_outlined, color: _rumboRed),
+                  border: InputBorder.none,
+                  hintText: 'Ingresa lugar o dirección en Riobamba',
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _rumboRed,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              onPressed: () {
+                final text = controller.text.trim();
+                if (text.isNotEmpty) {
+                  setState(() => _destinationName = text);
+                }
+                Navigator.pop(sheetContext);
+              },
+              child: const Text(
+                'Guardar Destino',
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showNotification(String message, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error_outline_rounded : Icons.check_circle_rounded,
+              color: Colors.white,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: isError ? _rumboRed : const Color(0xFF10B981),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // 5. MENÚ LATERAL (DRAWER)
+  // ===========================================================================
+
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: Colors.white,
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          // Header de Cuenta
+          UserAccountsDrawerHeader(
+            decoration: const BoxDecoration(
+              color: _rumboRed,
+            ),
+            currentAccountPicture: const CircleAvatar(
+              backgroundColor: Colors.white,
+              child: Text(
+                'H',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: _rumboRed,
+                ),
+              ),
+            ),
+            accountName: const Text(
+              'Henry Desarrollador',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            ),
+            accountEmail: const Row(
+              children: [
+                Text('henry.riobamba@gmail.com'),
+                SizedBox(width: 8),
+                Text('· ⭐ 4.95'),
+              ],
+            ),
+          ),
+
+          // Opciones de Menú
+          ListTile(
+            leading: const Icon(Icons.history_rounded, color: _textPrimary),
+            title: const Text('Historial de Viajes', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: _textMuted),
+            onTap: () {
+              Navigator.pop(context);
+              _showNotification('Historial de viajes en desarrollo.');
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.payment_rounded, color: _textPrimary),
+            title: const Text('Métodos de Pago', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: _textMuted),
+            onTap: () {
+              Navigator.pop(context);
+              _showNotification('Pagos en efectivo habilitados en Riobamba.');
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.headset_mic_rounded, color: _textPrimary),
+            title: const Text('Soporte y Ayuda', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: _textMuted),
+            onTap: () {
+              Navigator.pop(context);
+              _showNotification('Centro de soporte Riobamba Moto.');
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.settings_outlined, color: _textPrimary),
+            title: const Text('Configuración', style: TextStyle(fontWeight: FontWeight.w600)),
+            trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: _textMuted),
+            onTap: () {
+              Navigator.pop(context);
+              _showNotification('Configuraciones generales.');
+            },
+          ),
+
+          const Divider(indent: 16, endIndent: 16),
+
+          // Cerrar Sesión
+          ListTile(
+            leading: const Icon(Icons.logout_rounded, color: _rumboRed),
+            title: const Text(
+              'Cerrar Sesión',
+              style: TextStyle(fontWeight: FontWeight.bold, color: _rumboRed),
+            ),
+            onTap: () async {
+              Navigator.pop(context);
+              try {
+                await supabase.auth.signOut();
+              } catch (_) {}
+
+              if (!mounted) return;
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (context) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+          ),
+        ],
       ),
     );
   }
