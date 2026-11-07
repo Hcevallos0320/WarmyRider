@@ -58,17 +58,17 @@ class RiobambaMotoApp extends StatelessWidget {
       title: AppConstants.appName,
       debugShowCheckedModeBanner: false,
 
-      // Pantalla inicial: Pantalla principal del Pasajero
-      home: const PassengerHomeScreen(),
+      // Pantalla inicial: Inicio de Sesión oficial Rumbo
+      home: const LoginScreen(),
 
       // Rutas con nombre para navegación limpia
       routes: {
-        '/passenger_home': (context) => const PassengerHomeScreen(),
-        '/auth': (context) => const AuthScreen(),
         '/login': (context) => const LoginScreen(),
         '/register': (context) => const RegisterScreen(),
+        '/passenger_home': (context) => const PassengerHomeScreen(),
         '/driver_home': (context) => const DriverHomeScreen(),
         '/driver_kyc': (context) => const DriverKycScreen(),
+        '/auth': (context) => const AuthScreen(),
       },
     );
   }

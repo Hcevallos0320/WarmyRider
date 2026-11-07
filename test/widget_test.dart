@@ -1,32 +1,28 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:riobamba_moto/main.dart';
-import 'package:riobamba_moto/screens/auth_screen.dart';
+import 'package:riobamba_moto/screens/passenger_home_screen.dart';
 
 void main() {
-  testWidgets('Verifica renderizado inicial de rumbo (Riobamba Moto) AuthScreen', (WidgetTester tester) async {
+  testWidgets('Verifica renderizado inicial de LoginScreen en RiobambaMotoApp', (WidgetTester tester) async {
     // Construir la app y disparar un frame
-    await tester.pumpWidget(const MaterialApp(home: AuthScreen()));
+    await tester.pumpWidget(const RiobambaMotoApp());
 
     // Verificar que aparece la marca rumbo y la ciudad
     expect(find.text('rumbo'), findsOneWidget);
     expect(find.text('RIOBAMBA, EC'), findsOneWidget);
 
-    // Verificar textos de bienvenida
-    expect(find.textContaining('Tu ciudad'), findsOneWidget);
-    expect(find.textContaining('A tu ritmo'), findsOneWidget);
+    // Verificar títulos de bienvenida
+    expect(find.text('Bienvenido.'), findsOneWidget);
+    expect(find.text('De nuevo.'), findsOneWidget);
 
-    // Verificar selector de roles interactivo
-    expect(find.text('Soy Pasajero'), findsOneWidget);
-    expect(find.text('Soy Conductor'), findsOneWidget);
-
-    // Verificar selector de modo (Crear Cuenta / Iniciar Sesión)
-    expect(find.text('Crear Cuenta'), findsWidgets);
+    // Verificar botón principal y enlace de registro
     expect(find.text('Iniciar Sesión'), findsOneWidget);
+    expect(find.text('Crear una cuenta nueva'), findsOneWidget);
   });
 
   testWidgets('Verifica renderizado de PassengerHomeScreen', (WidgetTester tester) async {
-    await tester.pumpWidget(const RiobambaMotoApp());
+    await tester.pumpWidget(const MaterialApp(home: PassengerHomeScreen()));
     await tester.pump();
 
     expect(find.text('ESPOCH'), findsOneWidget);
